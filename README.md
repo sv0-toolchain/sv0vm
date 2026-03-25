@@ -4,7 +4,11 @@ the sv0 bytecode interpreter, initially implemented in Standard ML (SML/NJ), tra
 
 ## purpose
 
-sv0vm executes sv0 bytecode produced by sv0c's VM backend. it provides fast iteration during development (no external C compiler needed), powers the REPL (`sv0 repl`), and runs doc tests.
+sv0vm executes sv0 bytecode produced by sv0c's VM backend. it provides fast iteration during development (no external C compiler needed), powers the REPL (`sv0 repl`), and runs doc tests. this matches the **bytecode VM backend** and **sv0vm** placement in the [sv0 compiler vision and design](http://development.sasankvishnubhatla.net/tcowmbh/task/sv0-compiler-vision-and-design.html) document (compiler architecture diagram and toolchain table).
+
+## specification
+
+- **Bytecode:** [sv0doc/bytecode/format.md](../sv0doc/bytecode/format.md), [sv0doc/bytecode/instructions.md](../sv0doc/bytecode/instructions.md) (submodule path when using the combined workspace: same relative layout from repo root).
 
 ## architecture
 
@@ -41,9 +45,9 @@ sv0 bytecode (.sv0b)
 sml src/main.sml
 ```
 
-## specification
+## wider toolchain context
 
-sv0vm implements the bytecode format defined by sv0c's IR and the runtime semantics in [sv0doc](../sv0doc/).
+In the vision document, sv0-IR feeds **C**, **LLVM**, and **bytecode** backends. **Milestone 1** ships the C path only; this repository implements the **bytecode** decode/execute side as **Milestone 2** work progresses (interpreter and runtime are still being filled in; see `task/sv0vm-milestone-2.Rmd` in the parent **sv0-toolchain** repo).
 
 ## transition plan
 
