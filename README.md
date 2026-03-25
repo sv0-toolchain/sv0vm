@@ -42,7 +42,11 @@ sv0 bytecode (.sv0b)
 
 ```bash
 # requires SML/NJ
-sml src/main.sml
+make check          # compile-load smoke (or: sml < src/main.sml via use)
+make test           # bytecode round-trip tests
+
+# run a .sv0b from the parent toolchain (after sv0c --target=vm)
+SV0B=../sv0c/build/vm/hello.sv0b sml < scripts/run_sv0b.sml
 ```
 
 ## wider toolchain context

@@ -171,6 +171,7 @@ structure Bytecode = struct
     | JUMP_IF_NOT of int
     | CALL of int * int
     | RETURN
+    | RETURN_SLOTS of int (* u8: pop n cells as return values (0 = void); replaces plain RETURN when n<>1 *)
     | CALL_BUILTIN of int
     | ALLOC_STRUCT of int
     | GET_FIELD of int
@@ -236,6 +237,9 @@ structure Bytecode = struct
     | CALL (f, n) =>
         cat [bytes1 (w8 115), u32Le f, u32Le n]
     | RETURN => bytes1 (w8 116)
+    | RETURN_SLOTS n =>
+        if n < 0 orelse n > 255 then raise Fail "RETURN_SLOTS count out of range"
+        else cat [bytes1 (w8 118), bytes1 (w8 n)]
     | CALL_BUILTIN id => cat [bytes1 (w8 117), u32Le id]
     | ALLOC_STRUCT t => cat [bytes1 (w8 128), u32Le t]
     | GET_FIELD f => cat [bytes1 (w8 129), u32Le f]
@@ -321,6 +325,9 @@ structure Bytecode = struct
       | 116 => (RETURN, i + 1)
       | 117 =>
           let val (id, j) = u32At v (i + 1) in (CALL_BUILTIN id, j) end
+      | 118 =>
+          let val n = Word8.toInt (Word8Vector.sub (v, i + 1))
+          in (RETURN_SLOTS n, i + 2) end
       | 128 =>
           let val (t, j) = u32At v (i + 1) in (ALLOC_STRUCT t, j) end
       | 129 =>
