@@ -51,7 +51,7 @@ SV0B=../sv0c/build/vm/hello.sv0b sml < scripts/run_sv0b.sml
 
 ## wider toolchain context
 
-In the vision document, sv0-IR feeds **C**, **LLVM**, and **bytecode** backends. **Milestone 1** ships the C path only; this repository implements the **bytecode** decode/execute side as **Milestone 2** work progresses (interpreter and runtime are still being filled in; see `task/sv0vm-milestone-2.Rmd` in the parent **sv0-toolchain** repo).
+In the vision document, sv0-IR feeds **C**, **LLVM**, and **bytecode** backends. **Milestone 1** ships the C path; this repository implements the **bytecode** decode/execute side for **Milestone 2** (complete as of `task/sv0vm-milestone-2.Rmd` in the parent **sv0-toolchain** repo): loader, interpreter, runtime, contract checks, and CI parity with sv0c integration scenarios via `make integration-vm` / `./scripts/sv0 integration-vm`.
 
 ## transition plan
 
