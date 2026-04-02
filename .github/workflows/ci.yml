@@ -1,0 +1,29 @@
+# Standalone sv0vm: load interpreter + bytecode tests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SML/NJ
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smlnj
+
+      - name: Check and tests
+        run: make check test
