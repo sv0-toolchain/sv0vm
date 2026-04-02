@@ -14,16 +14,25 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-test:
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SML/NJ
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y smlnj
+      - name: Cache SML/NJ install
+        uses: actions/cache@v4
+        id: smlnj-cache
+        with:
+          path: ~/smlnj-110.99.9
+          key: smlnj-110.99.9-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Install SML/NJ (110.99.x; apt package is too old)
+        run: bash scripts/ci-install-smlnj.sh
 
       - name: Check and tests
         run: make check test
