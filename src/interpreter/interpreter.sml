@@ -222,8 +222,10 @@ structure Interpreter = struct
                     end
                 | B.CALL (fidx, na) =>
                     let
-                      val rawArgs = popN stack na
-                      val args = rev rawArgs
+                      (* popN returns args in call order (left-to-right): each pop takes TOS,
+                         so after n pops the list is [first-arg, ..., last-arg]. Do not reverse:
+                         callee param slot 0 must bind the first formal. *)
+                      val args = popN stack na
                       val callee = Vector.sub (funcs, fidx)
                       val locN = Array.array (#localCount callee, CUnit)
                       fun fill i [] = ()
