@@ -252,7 +252,11 @@ structure Interpreter = struct
                       | [] => raise Fail "interpreter: RETURN"
                     end
                 | B.RETURN_SLOTS n =>
-                    let val vals = rev (popN stack n)
+                    let
+                      (* Same order as CALL: popN yields cells from first-returned slot to last;
+                         push them in that order so TOS is the last slot (matches STORE_LOCAL
+                         sequence after multi-slot CALL). *)
+                      val vals = popN stack n
                     in
                       case !frames of
                         [_] => (app (push stack) vals; frames := []; false)
