@@ -284,6 +284,12 @@ structure Interpreter = struct
                             TextIO.print (s ^ "\n"); setTopIp nextIp; true
                           end
                       | _ => raise Fail "interpreter: println expects string index"
+                    else if bid = 1 then
+                      (* sv0_no_alias: two i32 slot tokens (vm_codegen Ir.VAddrOf); CBool on stack *)
+                      case (pop stack, pop stack) of
+                        (CInt b, CInt a) =>
+                          (push stack (CBool (a <> b)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: builtin 1 (no_alias) expects two int cells"
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
