@@ -84,12 +84,23 @@ structure Interpreter = struct
       | _ => raise Fail "interpreter: arithmetic on non-int"
     end
 
+  (* C-style: bool promotes to 0/1 for relational ops (forall/exists lowering uses pred == 0). *)
+  fun cellAsIntForCmp c =
+    case c of
+      CInt i => i
+    | CBool b => if b then 1 else 0
+    | _ => raise Fail "interpreter: compare on non-int"
+
   fun cmp rel stack =
     let val b = pop stack
         val a = pop stack
     in
       case (a, b) of
         (CInt x, CInt y) => push stack (CBool (rel (x, y)))
+      | (CBool _, _) =>
+          push stack (CBool (rel (cellAsIntForCmp a, cellAsIntForCmp b)))
+      | (_, CBool _) =>
+          push stack (CBool (rel (cellAsIntForCmp a, cellAsIntForCmp b)))
       | _ => raise Fail "interpreter: compare on non-int"
     end
 
