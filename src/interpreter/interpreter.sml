@@ -110,6 +110,38 @@ structure Interpreter = struct
     let
       val funcs = #funcs ld
       val strings = #strings ld
+      val dynStrings = ref ([] : string list)
+      val dynCount = ref 0
+      fun lookupStr i =
+        if i < Vector.length strings then Vector.sub (strings, i)
+        else List.nth (!dynStrings, i - Vector.length strings)
+      fun addStr s =
+        let val idx = Vector.length strings + !dynCount
+        in dynStrings := !dynStrings @ [s]; dynCount := !dynCount + 1; idx end
+
+      val dynVecs : int list ref list ref = ref []
+      val dynVecCount = ref 0
+      fun vecNew () =
+        let val idx = !dynVecCount
+        in dynVecs := !dynVecs @ [ref []]; dynVecCount := !dynVecCount + 1; idx end
+      fun vecRef h = List.nth (!dynVecs, h)
+
+      val boxPool : int Array.array = Array.array (65536, 0)
+      val boxNext = ref 0
+      fun boxAlloc nwords =
+        let val h = !boxNext
+        in boxNext := h + nwords; h end
+      fun boxStore h off v = Array.update (boxPool, h + off, v)
+      fun boxLoad h off = Array.sub (boxPool, h + off)
+      fun vecPush h v = let val r = vecRef h in r := !r @ [v] end
+      fun vecLen h = length (!(vecRef h))
+      fun vecGet h i = List.nth (!(vecRef h), i)
+      fun vecSet h i v =
+        let val r = vecRef h
+            val old = !r
+        in r := List.tabulate (length old,
+             fn k => if k = i then v else List.nth (old, k))
+        end
 
       val frames = ref ([] : activ list)
 
@@ -279,17 +311,85 @@ structure Interpreter = struct
                     if bid = 0 then
                       case pop stack of
                         CStrIdx i =>
-                          let val s = Vector.sub (strings, i)
-                          in
-                            TextIO.print (s ^ "\n"); setTopIp nextIp; true
-                          end
+                          (TextIO.print (lookupStr i ^ "\n"); setTopIp nextIp; true)
                       | _ => raise Fail "interpreter: println expects string index"
                     else if bid = 1 then
-                      (* sv0_no_alias: two i32 slot tokens (vm_codegen Ir.VAddrOf); CBool on stack *)
-                      case (pop stack, pop stack) of
+                      (case (pop stack, pop stack) of
                         (CInt b, CInt a) =>
                           (push stack (CBool (a <> b)); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: builtin 1 (no_alias) expects two int cells"
+                      | _ => raise Fail "interpreter: builtin 1 (no_alias) expects two int cells")
+                    else if bid = 2 then
+                      case pop stack of
+                        CStrIdx i =>
+                          (push stack (CInt (size (lookupStr i))); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: string_len expects string index"
+                    else if bid = 3 then
+                      (case (pop stack, pop stack) of
+                        (CStrIdx bi, CStrIdx ai) =>
+                          (push stack (CBool (lookupStr ai = lookupStr bi)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: string_eq expects two string indices")
+                    else if bid = 4 then
+                      (case (pop stack, pop stack) of
+                        (CStrIdx bi, CStrIdx ai) =>
+                          let val s = lookupStr ai ^ lookupStr bi
+                              val idx = addStr s
+                          in push stack (CStrIdx idx); setTopIp nextIp; true end
+                      | _ => raise Fail "interpreter: string_concat expects two string indices")
+                    else if bid = 5 then
+                      (case (pop stack, pop stack) of
+                        (CInt idx, CStrIdx si) =>
+                          let val s = lookupStr si
+                          in push stack (CInt (Char.ord (String.sub (s, idx)))); setTopIp nextIp; true end
+                      | _ => raise Fail "interpreter: string_char_at expects string index and int")
+                    else if bid = 6 then
+                      (case (pop stack, pop stack, pop stack) of
+                        (CInt len, CInt start, CStrIdx si) =>
+                          let val s = String.substring (lookupStr si, start, len)
+                              val idx = addStr s
+                          in push stack (CStrIdx idx); setTopIp nextIp; true end
+                      | _ => raise Fail "interpreter: string_substr expects string index and two ints")
+                    else if bid = 7 then
+                      (push stack (CInt (vecNew ())); setTopIp nextIp; true)
+                    else if bid = 8 then
+                      (case (pop stack, pop stack) of
+                        (CInt elem, CInt h) =>
+                          (vecPush h elem; setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: vec_push expects handle and int")
+                    else if bid = 9 then
+                      case pop stack of
+                        CInt h =>
+                          (push stack (CInt (vecLen h)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: vec_len expects handle"
+                    else if bid = 10 then
+                      (case (pop stack, pop stack) of
+                        (CInt idx, CInt h) =>
+                          (push stack (CInt (vecGet h idx)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: vec_get expects handle and int")
+                    else if bid = 11 then
+                      (case (pop stack, pop stack, pop stack) of
+                        (CInt v, CInt idx, CInt h) =>
+                          (vecSet h idx v; setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: vec_set expects handle, int, int")
+                    else if bid = 12 then
+                      (case pop stack of
+                        CInt nwords =>
+                          (push stack (CInt (boxAlloc nwords)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: box_alloc expects int")
+                    else if bid = 13 then
+                      let val vv = pop stack
+                          val vo = pop stack
+                          val vh = pop stack
+                          val iv = case vv of CInt n => n | CUnit => 0 | CBool b => (if b then 1 else 0) | _ => raise Fail "interpreter: box_store bad value"
+                          val io = case vo of CInt n => n | _ => raise Fail "interpreter: box_store bad offset"
+                          val ih = case vh of CInt n => n | _ => raise Fail "interpreter: box_store bad handle"
+                      in
+                        boxStore ih io iv; setTopIp nextIp; true
+                      end
+                    else if bid = 14 then
+                      (case (pop stack, pop stack) of
+                        (CInt off, CInt h) =>
+                          (push stack (CInt (boxLoad h off)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: box_load expects handle and offset")
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
