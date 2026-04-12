@@ -13,3 +13,4 @@ val path =
 val () = print "SV0VM_RUN_BEGIN\n";
 val exitCode = Interpreter.runFile path;
 val () = print ("vm_exit:" ^ Int.toString exitCode ^ "\n");
+OS.Process.exit (if exitCode = 0 then OS.Process.success else OS.Process.failure);
