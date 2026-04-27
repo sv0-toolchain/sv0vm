@@ -119,6 +119,51 @@ structure Interpreter = struct
         let val idx = Vector.length strings + !dynCount
         in dynStrings := !dynStrings @ [s]; dynCount := !dynCount + 1; idx end
 
+      fun readAllText path =
+        let val ins = TextIO.openIn path
+        in TextIO.inputAll ins before TextIO.closeIn ins end
+           handle _ => raise Fail "read_file: io error"
+
+      fun isHidden name =
+        String.size name > 0 andalso String.sub (name, 0) = #"."
+
+      fun endsSv0 name =
+        let val n = String.size name
+        in n >= 4 andalso String.substring (name, n - 4, 4) = ".sv0" end
+
+      fun walkSv0Paths dir acc =
+        let
+          val dh = OS.FileSys.openDir dir
+          fun loop acc =
+            case OS.FileSys.readDir dh of
+              NONE => (OS.FileSys.closeDir dh; acc)
+            | SOME name =>
+                if isHidden name then loop acc
+                else
+                  let val full = OS.Path.joinDirFile {dir = dir, file = name}
+                  in
+                    if OS.FileSys.isDir full then loop (walkSv0Paths full acc)
+                    else if endsSv0 name then loop (full :: acc)
+                    else loop acc
+                  end
+        in
+          loop acc
+        end
+           handle _ => raise Fail "read_dir: io error"
+
+      fun insertPathSorted (s : string) (xs : string list) : string list =
+        case xs of
+          [] => [s]
+        | t :: ts =>
+            (case String.compare (s, t) of
+               GREATER => t :: insertPathSorted s ts
+             | _ => s :: t :: ts)
+
+      fun sortPathsAsc (xs : string list) : string list =
+        case xs of
+          [] => []
+        | h :: t => insertPathSorted h (sortPathsAsc t)
+
       val dynVecs : int list ref list ref = ref []
       val dynVecCount = ref 0
       fun vecNew () =
@@ -390,6 +435,45 @@ structure Interpreter = struct
                         (CInt off, CInt h) =>
                           (push stack (CInt (boxLoad h off)); setTopIp nextIp; true)
                       | _ => raise Fail "interpreter: box_load expects handle and offset")
+                    else if bid = 15 then
+                      (case pop stack of
+                         CStrIdx pi =>
+                           let
+                             val path = lookupStr pi
+                             val s = readAllText path
+                             val idx = addStr s
+                           in
+                             push stack (CStrIdx idx); setTopIp nextIp; true
+                           end
+                       | _ => raise Fail "interpreter: read_file expects string index")
+                    else if bid = 16 then
+                      (case (pop stack, pop stack) of
+                         (CStrIdx ci, CStrIdx pi) =>
+                           let
+                             val contents = lookupStr ci
+                             val path = lookupStr pi
+                           in
+                             ( let val outs = TextIO.openOut path
+                               in TextIO.output (outs, contents); TextIO.closeOut outs end
+                             ) handle _ => raise Fail "write_file: io error"
+                             ; setTopIp nextIp
+                             ; true
+                           end
+                       | _ =>
+                           raise Fail
+                             "interpreter: write_file expects path then contents string indices")
+                    else if bid = 17 then
+                      (case pop stack of
+                         CStrIdx di =>
+                           let
+                             val dir0 = lookupStr di
+                             val paths = sortPathsAsc (walkSv0Paths dir0 [])
+                             val s = String.concatWith "\n" paths
+                             val idx = addStr s
+                           in
+                             push stack (CStrIdx idx); setTopIp nextIp; true
+                           end
+                       | _ => raise Fail "interpreter: read_dir expects string index")
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
