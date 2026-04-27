@@ -2,7 +2,7 @@
 
 **Meta-repo rollup:** when this tree is the `sv0vm/` submodule of **sv0-toolchain**, the parent copies this file’s **`%`** into `task/sv0-toolchain-progress.md`. **Standalone clone:** keep this file authoritative here; reconcile on the next meta-repo integration.
 
-**Last updated:** 2026-04-22
+**Last updated:** 2026-04-27 (**`CALL_BUILTIN` 15–17:** **`read_file` / `write_file` / `read_dir`** in **`src/interpreter/interpreter.sml`** — TextIO/OS walk + sorted path blob per **`sv0doc/compiler/bootstrap-host-io.md`**)
 
 ## Checklist (local source of truth)
 
