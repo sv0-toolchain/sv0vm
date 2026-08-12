@@ -214,20 +214,31 @@ structure Interpreter = struct
                     (push stack (CInt (Int32.toInt x)); setTopIp nextIp; true)
                 | B.PUSH_BOOL b => (push stack (CBool b); setTopIp nextIp; true)
                 | B.PUSH_STRING i => (push stack (CStrIdx i); setTopIp nextIp; true)
-                | B.ADD_I32 => (arithII (fn (a, b) => a + b) stack; setTopIp nextIp; true)
-                | B.SUB_I32 => (arithII (fn (a, b) => a - b) stack; setTopIp nextIp; true)
-                | B.MUL_I32 => (arithII (fn (a, b) => a * b) stack; setTopIp nextIp; true)
+                (* i32 arithmetic wraps mod 2^32 (two's-complement) to match the
+                   C backend / Rust i32, NOT SML's wider int. asWord32 truncates to
+                   32 bits and Word32.toIntX sign-extends back. div/mod use
+                   Int.quot/Int.rem (truncate toward zero; remainder takes the sign
+                   of the dividend) rather than SML's floor-based div/mod. *)
+                | B.ADD_I32 => (arithII (fn (a, b) => Word32.toIntX (Word32.+ (asWord32 a, asWord32 b))) stack; setTopIp nextIp; true)
+                | B.SUB_I32 => (arithII (fn (a, b) => Word32.toIntX (Word32.- (asWord32 a, asWord32 b))) stack; setTopIp nextIp; true)
+                | B.MUL_I32 => (arithII (fn (a, b) => Word32.toIntX (Word32.* (asWord32 a, asWord32 b))) stack; setTopIp nextIp; true)
                 | B.DIV_I32 =>
                     ( case !stack of
                         CInt 0 :: _ => raise Fail "interpreter: division by zero"
                       | _ => ();
-                      arithII (fn (a, b) => a div b) stack;
+                      arithII (fn (a, b) => Word32.toIntX (asWord32 (Int.quot (a, b)))) stack;
                       setTopIp nextIp;
                       true)
-                | B.MOD_I32 => (arithII (fn (a, b) => a mod b) stack; setTopIp nextIp; true)
+                | B.MOD_I32 =>
+                    ( case !stack of
+                        CInt 0 :: _ => raise Fail "interpreter: modulo by zero"
+                      | _ => ();
+                      arithII (fn (a, b) => Word32.toIntX (asWord32 (Int.rem (a, b)))) stack;
+                      setTopIp nextIp;
+                      true)
                 | B.NEG_I32 =>
                     ( case pop stack of
-                        CInt x => push stack (CInt (~x))
+                        CInt x => push stack (CInt (Word32.toIntX (asWord32 (~x))))
                       | _ => raise Fail "interpreter: NEG_I32";
                       setTopIp nextIp;
                       true)
