@@ -75,4 +75,51 @@ val () =
   else
     raise Fail "file round-trip strings/funcs"
 
+(* i32 arithmetic semantics (BH-2): wraparound on overflow + truncate-toward-zero
+   div/mod, matching the C backend / Rust — NOT SML's wider-int / floor semantics. *)
+local
+  (* Round-trip through the .sv0b byte encoding so the program crosses into the
+     interpreter as bytes (avoids SML `use`-load structure-identity issues that a
+     direct Bytecode.program value hits). *)
+  fun runI (insns : Bytecode.insn list) : int =
+    let
+      val prog : Bytecode.program =
+        { strings = ["main"]
+        , funcs = [ { nameIdx = 0, arity = 0, localCount = 0, code = insns } ] }
+      val vec = Bytecode.encodeFile prog
+      val path = OS.FileSys.tmpName ()
+      val os = BinIO.openOut path
+      val () = BinIO.output (os, vec)
+      val () = BinIO.closeOut os
+      val r = Interpreter.runFile path
+      val () = OS.FileSys.remove path
+    in
+      r
+    end
+  fun p (i : int) = Bytecode.PUSH_I32 (Int32.fromInt i)
+  fun expect (label, got, want) =
+    if got = want then ()
+    else raise Fail ("arith " ^ label ^ ": got " ^ Int.toString got
+                     ^ " want " ^ Int.toString want)
+in
+  (* 2e9 + 2e9 = 4e9 wraps to -294967296 (not the SML-wide 4000000000) *)
+  val () = expect ("overflow-add",
+    runI [p 2000000000, p 2000000000, Bytecode.ADD_I32, Bytecode.RETURN], ~294967296)
+  (* 46341*46341 = 2147488281 overflows i32 to negative *)
+  val () = expect ("overflow-mul",
+    runI [p 46341, p 46341, Bytecode.MUL_I32, Bytecode.RETURN], ~2147479015)
+  (* (-100)/3 = -33 (trunc toward zero, not -34 floor) *)
+  val () = expect ("neg-div",
+    runI [p (~100), p 3, Bytecode.DIV_I32, Bytecode.RETURN], ~33)
+  (* (-7) % 3 = -1 (sign of dividend, not +2 floor-mod) *)
+  val () = expect ("neg-mod",
+    runI [p (~7), p 3, Bytecode.MOD_I32, Bytecode.RETURN], ~1)
+  (* (-1) % 100 = -1 (not +99) *)
+  val () = expect ("neg-mod2",
+    runI [p (~1), p 100, Bytecode.MOD_I32, Bytecode.RETURN], ~1)
+  (* INT_MIN / -1 wraps to INT_MIN (would raise Overflow without the Word32 wrap) *)
+  val () = expect ("intmin-div",
+    runI [p (~2147483648), p (~1), Bytecode.DIV_I32, Bytecode.RETURN], ~2147483648)
+end
+
 val () = print "bytecode tests: OK\n"
