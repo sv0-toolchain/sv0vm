@@ -106,6 +106,11 @@ structure Interpreter = struct
 
   fun asWord32 i = Word32.fromLargeInt (Int.toLarge i)
 
+  (* A runtime contract violation (BH-10c): raised at CONTRACT_CHECK and caught
+     by runWithStack, which prints the C-runtime-matching message to stderr and
+     returns exit code 1 — a clean abort, not an uncaught SML exception. *)
+  exception ContractViolation of string
+
   fun runWithStack (ld : loaded) (mainIdx : int) (stack : cell list ref) : int =
     let
       val funcs = #funcs ld
@@ -492,7 +497,7 @@ structure Interpreter = struct
                         val msg = Vector.sub (strings, midx)
                     in
                       if ok then (setTopIp nextIp; true)
-                      else raise Fail ("contract: " ^ msg)
+                      else raise (ContractViolation msg)
                     end
                 | _ => raise Fail "interpreter: opcode not implemented in this slice"
               end
@@ -502,7 +507,11 @@ structure Interpreter = struct
       val () = frames := [{f = mainF, ip = 0, loc = mainLoc}]
       fun loop () =
         if step () then loop () else ()
-      val () = loop ()
+      val () =
+        (loop ()
+         handle ContractViolation m =>
+           ( TextIO.output (TextIO.stdErr, "sv0 contract violation: " ^ m ^ "\n")
+           ; stack := [CInt 1] ))
     in
       case !stack of
         CInt code :: _ => code
