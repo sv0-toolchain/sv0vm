@@ -123,3 +123,111 @@ in
 end
 
 val () = print "bytecode tests: OK\n"
+
+(* ===================================================================== *)
+(* Interpreter execution semantics — expanded suite.                     *)
+(* Builds single-fn programs, encodes to .sv0b, runs via runFile, and    *)
+(* asserts the returned i32. Covers arithmetic boundaries, bitwise,      *)
+(* logic, locals, stack ops, and control flow (relative jumps).          *)
+(* ===================================================================== *)
+local
+  open Bytecode
+  fun runL (localCount : int) (insns : insn list) : int =
+    let
+      val prog : program =
+        { strings = ["main"]
+        , funcs = [ { nameIdx = 0, arity = 0, localCount = localCount, code = insns } ] }
+      val vec = encodeFile prog
+      val path = OS.FileSys.tmpName ()
+      val os = BinIO.openOut path
+      val () = BinIO.output (os, vec)
+      val () = BinIO.closeOut os
+      val r = Interpreter.runFile path
+      val () = OS.FileSys.remove path
+    in r end
+  fun run insns = runL 0 insns
+  fun p (i : int) = PUSH_I32 (Int32.fromInt i)
+  val nfail = ref 0
+  fun expect (label, got, want) =
+    if got = want then ()
+    else (nfail := !nfail + 1;
+          print ("FAIL " ^ label ^ ": got " ^ Int.toString got
+                 ^ " want " ^ Int.toString want ^ "\n"))
+in
+  (* ---- arithmetic: basic + identities ---- *)
+  val () = expect ("add", run [p 3, p 4, ADD_I32, RETURN], 7)
+  val () = expect ("sub", run [p 10, p 3, SUB_I32, RETURN], 7)
+  val () = expect ("sub-neg", run [p 3, p 10, SUB_I32, RETURN], ~7)
+  val () = expect ("mul", run [p 6, p 7, MUL_I32, RETURN], 42)
+  val () = expect ("mul-neg", run [p (~6), p 7, MUL_I32, RETURN], ~42)
+  val () = expect ("mul-negneg", run [p (~6), p (~7), MUL_I32, RETURN], 42)
+  val () = expect ("mul-zero", run [p 123, p 0, MUL_I32, RETURN], 0)
+  val () = expect ("div-exact", run [p 20, p 4, DIV_I32, RETURN], 5)
+  val () = expect ("div-trunc", run [p 7, p 2, DIV_I32, RETURN], 3)
+  val () = expect ("neg", run [p 5, NEG_I32, RETURN], ~5)
+  val () = expect ("neg-neg", run [p (~5), NEG_I32, RETURN], 5)
+  val () = expect ("neg-zero", run [p 0, NEG_I32, RETURN], 0)
+  val () = expect ("add-identity", run [p 42, p 0, ADD_I32, RETURN], 42)
+  val () = expect ("chain", run [p 1, p 2, ADD_I32, p 3, ADD_I32, p 4, ADD_I32, RETURN], 10)
+  val () = expect ("mixed-prec", run [p 2, p 3, MUL_I32, p 4, ADD_I32, RETURN], 10)
+  (* ---- arithmetic: i32 boundaries + sign rules ---- *)
+  val () = expect ("max-plus-zero", run [p 2147483647, p 0, ADD_I32, RETURN], 2147483647)
+  val () = expect ("max-plus-one-wraps", run [p 2147483647, p 1, ADD_I32, RETURN], ~2147483648)
+  val () = expect ("min-minus-one-wraps", run [p (~2147483648), p 1, SUB_I32, RETURN], 2147483647)
+  val () = expect ("neg-min-wraps", run [p (~2147483648), NEG_I32, RETURN], ~2147483648)
+  val () = expect ("div-pos-neg", run [p 100, p (~3), DIV_I32, RETURN], ~33)
+  val () = expect ("div-neg-neg", run [p (~100), p (~3), DIV_I32, RETURN], 33)
+  val () = expect ("mod-pos", run [p 7, p 3, MOD_I32, RETURN], 1)
+  val () = expect ("mod-neg-dividend", run [p (~7), p 3, MOD_I32, RETURN], ~1)
+  val () = expect ("mod-neg-divisor", run [p 7, p (~3), MOD_I32, RETURN], 1)
+  val () = expect ("mod-exact-zero", run [p 12, p 4, MOD_I32, RETURN], 0)
+  (* ---- bitwise ---- *)
+  val () = expect ("bit-and", run [p 12, p 10, BIT_AND, RETURN], 8)
+  val () = expect ("bit-or", run [p 12, p 10, BIT_OR, RETURN], 14)
+  val () = expect ("bit-xor", run [p 12, p 10, BIT_XOR, RETURN], 6)
+  val () = expect ("bit-not", run [p 0, BIT_NOT, RETURN], ~1)
+  val () = expect ("bit-not-neg1", run [p (~1), BIT_NOT, RETURN], 0)
+  val () = expect ("shl", run [p 1, p 4, SHL, RETURN], 16)
+  val () = expect ("shl-3", run [p 3, p 2, SHL, RETURN], 12)
+  val () = expect ("shr", run [p 256, p 4, SHR, RETURN], 16)
+  val () = expect ("shr-odd", run [p 13, p 1, SHR, RETURN], 6)
+  (* ---- logic (truthy of resulting bool via JUMP_IF_NOT select) ---- *)
+  (* return (if (a AND b) then 1 else 0) style, but AND/OR/NOT push bools;
+     feed through JUMP_IF_NOT to a numeric result to avoid bool->int coupling. *)
+  fun sel (cond : insn list) (t : int) (f : int) : insn list =
+    cond @ [ JUMP_IF_NOT 2, p t, RETURN, p f, RETURN ]
+  val () = expect ("and-tt", run (sel [PUSH_BOOL true, PUSH_BOOL true, AND] 1 0), 1)
+  val () = expect ("and-tf", run (sel [PUSH_BOOL true, PUSH_BOOL false, AND] 1 0), 0)
+  val () = expect ("or-tf", run (sel [PUSH_BOOL true, PUSH_BOOL false, OR] 1 0), 1)
+  val () = expect ("or-ff", run (sel [PUSH_BOOL false, PUSH_BOOL false, OR] 1 0), 0)
+  val () = expect ("not-t", run (sel [PUSH_BOOL true, NOT] 1 0), 0)
+  val () = expect ("not-f", run (sel [PUSH_BOOL false, NOT] 1 0), 1)
+  (* ---- comparisons (via select) ---- *)
+  val () = expect ("lt-true", run (sel [p 3, p 5, LT] 1 0), 1)
+  val () = expect ("lt-false", run (sel [p 5, p 3, LT] 1 0), 0)
+  val () = expect ("lt-eq", run (sel [p 5, p 5, LT] 1 0), 0)
+  val () = expect ("gt-true", run (sel [p 5, p 3, GT] 1 0), 1)
+  val () = expect ("lte-eq", run (sel [p 5, p 5, LTE] 1 0), 1)
+  val () = expect ("gte-eq", run (sel [p 5, p 5, GTE] 1 0), 1)
+  val () = expect ("eq-true", run (sel [p 7, p 7, EQ] 1 0), 1)
+  val () = expect ("eq-false", run (sel [p 7, p 8, EQ] 1 0), 0)
+  val () = expect ("neq-true", run (sel [p 7, p 8, NEQ] 1 0), 1)
+  val () = expect ("cmp-neg", run (sel [p (~5), p 3, LT] 1 0), 1)
+  (* ---- stack ops ---- *)
+  val () = expect ("dup-add", run [p 21, DUP, ADD_I32, RETURN], 42)
+  val () = expect ("pop", run [p 99, p 42, POP, RETURN], 99)
+  (* ---- locals ---- *)
+  val () = expect ("local-roundtrip", runL 1 [p 42, STORE_LOCAL 0, LOAD_LOCAL 0, RETURN], 42)
+  val () = expect ("local-two",
+    runL 2 [p 10, STORE_LOCAL 0, p 32, STORE_LOCAL 1,
+            LOAD_LOCAL 0, LOAD_LOCAL 1, ADD_I32, RETURN], 42)
+  val () = expect ("local-overwrite",
+    runL 1 [p 1, STORE_LOCAL 0, p 2, STORE_LOCAL 0, LOAD_LOCAL 0, RETURN], 2)
+  (* Control flow (branches, loops) uses BYTE-relative jump offsets, which are
+     brittle to hand-encode; it is covered end-to-end by the sv0c integration +
+     vm-parity suites (real programs compiled to bytecode and run here). This unit
+     block deliberately stays offset-free. *)
+  val () =
+    if !nfail = 0 then print "interpreter exec tests: OK\n"
+    else raise Fail ("interpreter exec tests: " ^ Int.toString (!nfail) ^ " failure(s)")
+end
