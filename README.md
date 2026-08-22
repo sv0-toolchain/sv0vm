@@ -56,3 +56,8 @@ In the vision document, sv0-IR feeds **C**, **LLVM**, and **bytecode** backends.
 ## transition plan
 
 sv0vm starts in SML/NJ for consistency with sv0c. once sv0c can compile sv0 code with the necessary features (pattern matching, algebraic data types, basic I/O), sv0vm will be rewritten in sv0 itself.
+
+## license
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
