@@ -227,6 +227,34 @@ in
      brittle to hand-encode; it is covered end-to-end by the sv0c integration +
      vm-parity suites (real programs compiled to bytecode and run here). This unit
      block deliberately stays offset-free. *)
+
+  (* ---- VMF-011/012: f64 + i64 stack ops (sv0c-vm-float-parity). `sel` turns a
+     bool result into a 1/0 exit code. ---- *)
+  fun pf (r : real) = PUSH_F64 r
+  fun pl (i : Int64.int) = PUSH_I64 i
+  (* f64 arithmetic *)
+  val () = expect ("f64-add", run (sel [pf 1.5, pf 2.5, ADD_F64, pf 3.9, GT] 1 0), 1)
+  val () = expect ("f64-sub", run (sel [pf 5.0, pf 1.5, SUB_F64, pf 3.5, EQ] 1 0), 1)
+  val () = expect ("f64-mul", run (sel [pf 2.0, pf 3.0, MUL_F64, pf 6.0, EQ] 1 0), 1)
+  val () = expect ("f64-div", run (sel [pf 7.0, pf 2.0, DIV_F64, pf 3.5, EQ] 1 0), 1)
+  val () = expect ("f64-neg", run (sel [pf 4.0, NEG_F64, pf 0.0, LT] 1 0), 1)
+  val () = expect ("f64-lt", run (sel [pf 1.1, pf 2.2, LT] 1 0), 1)
+  val () = expect ("f64-gte-eq", run (sel [pf 2.5, pf 2.5, GTE] 1 0), 1)
+  val () = expect ("f64-neq", run (sel [pf 1.0, pf 2.0, NEQ] 1 0), 1)
+  (* i64 arithmetic — values exceed i32 range, so these are wrong under CInt *)
+  val () = expect ("i64-add",
+    run (sel [pl 5000000000, pl 3000000000, ADD_I64, pl 8000000000, EQ] 1 0), 1)
+  val () = expect ("i64-sub",
+    run (sel [pl 10000000000, pl 1, SUB_I64, pl 9999999999, EQ] 1 0), 1)
+  val () = expect ("i64-mul-wrap",
+    run (sel [pl 4294967296, pl 4294967296, MUL_I64, pl 0, EQ] 1 0), 1)
+  val () = expect ("i64-div",
+    run (sel [pl 10000000000, pl 4, DIV_I64, pl 2500000000, EQ] 1 0), 1)
+  val () = expect ("i64-neg",
+    run (sel [pl 5000000000, NEG_I64, pl 0, LT] 1 0), 1)
+  val () = expect ("i64-gt-wide",
+    run (sel [pl 5000000000, pl 3000000000, GT] 1 0), 1)
+
   val () =
     if !nfail = 0 then print "interpreter exec tests: OK\n"
     else raise Fail ("interpreter exec tests: " ^ Int.toString (!nfail) ^ " failure(s)")
