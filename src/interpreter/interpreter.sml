@@ -4,7 +4,17 @@ structure Interpreter = struct
 
   structure B = Bytecode
 
-  datatype cell = CInt of int | CBool of bool | CUnit | CStrIdx of int
+  (* VMF-010: CF64/CI64 added for the sv0c-vm-float-parity work. The .sv0b
+     decoder already produces PUSH_F64/PUSH_I64/*_F64/*_I64 (opcodes 5,6,32-37,
+     48-52); the dispatch below now runs them instead of "opcode not implemented
+     in this slice". *)
+  datatype cell =
+      CInt of int
+    | CBool of bool
+    | CUnit
+    | CStrIdx of int
+    | CF64 of real
+    | CI64 of Int64.int
 
   fun truthy c =
     case c of
@@ -12,6 +22,8 @@ structure Interpreter = struct
     | CInt i => i <> 0
     | CUnit => false
     | CStrIdx _ => true
+    | CF64 r => not (Real.== (r, 0.0))
+    | CI64 i => i <> (0 : Int64.int)
 
   type func_rec =
     { nameIdx : int
@@ -84,6 +96,30 @@ structure Interpreter = struct
       | _ => raise Fail "interpreter: arithmetic on non-int"
     end
 
+  (* VMF-011: f64 / i64 stack arithmetic. i64 add/sub/mul wrap mod 2^64 via
+     Word64 (matching the i32 path's Word32 wrap); div/mod use Int64.quot/rem
+     (truncate toward zero) like the i32 path. f64 ops are plain IEEE-754. *)
+  fun w64 (x : Int64.int) : Word64.word = Word64.fromLargeInt (Int64.toLarge x)
+  fun unw64 (w : Word64.word) : Int64.int = Int64.fromLarge (Word64.toLargeIntX w)
+
+  fun arithFF opFn stack =
+    let val b = pop stack
+        val a = pop stack
+    in
+      case (a, b) of
+        (CF64 x, CF64 y) => push stack (CF64 (opFn (x, y)))
+      | _ => raise Fail "interpreter: f64 arithmetic on non-f64"
+    end
+
+  fun arithLL opFn stack =
+    let val b = pop stack
+        val a = pop stack
+    in
+      case (a, b) of
+        (CI64 x, CI64 y) => push stack (CI64 (opFn (x, y)))
+      | _ => raise Fail "interpreter: i64 arithmetic on non-i64"
+    end
+
   (* C-style: bool promotes to 0/1 for relational ops (forall/exists lowering uses pred == 0). *)
   fun cellAsIntForCmp c =
     case c of
@@ -91,18 +127,47 @@ structure Interpreter = struct
     | CBool b => if b then 1 else 0
     | _ => raise Fail "interpreter: compare on non-int"
 
-  fun cmp rel stack =
+  (* VMF-012: comparisons are one polymorphic opcode each (EQ/NEQ/LT/GT/LTE/GTE);
+     the interpreter picks int / i64 / f64 by the operand cell kind. Each record
+     carries an int, a real, and an Int64 comparator (distinct RHS types make SML
+     resolve the overloading). Real comparators use Real.</Real.== etc. — IEEE
+     semantics (NaN => false), never Real.compare which raises on unordered. *)
+  type cmpRec =
+    { ii : int * int -> bool
+    , rr : real * real -> bool
+    , ll : Int64.int * Int64.int -> bool
+    }
+
+  fun cmp ({ii, rr, ll} : cmpRec) stack =
     let val b = pop stack
         val a = pop stack
     in
       case (a, b) of
-        (CInt x, CInt y) => push stack (CBool (rel (x, y)))
+        (CInt x, CInt y) => push stack (CBool (ii (x, y)))
+      | (CI64 x, CI64 y) => push stack (CBool (ll (x, y)))
+      | (CF64 x, CF64 y) => push stack (CBool (rr (x, y)))
       | (CBool _, _) =>
-          push stack (CBool (rel (cellAsIntForCmp a, cellAsIntForCmp b)))
+          push stack (CBool (ii (cellAsIntForCmp a, cellAsIntForCmp b)))
       | (_, CBool _) =>
-          push stack (CBool (rel (cellAsIntForCmp a, cellAsIntForCmp b)))
+          push stack (CBool (ii (cellAsIntForCmp a, cellAsIntForCmp b)))
       | _ => raise Fail "interpreter: compare on non-int"
     end
+
+  val cmpEQ : cmpRec =
+    {ii = fn (a, b) => a = b, rr = Real.==, ll = fn (a, b) => a = b}
+  val cmpNEQ : cmpRec =
+    {ii = fn (a, b) => a <> b, rr = fn (a, b) => not (Real.== (a, b)),
+     ll = fn (a, b) => a <> b}
+  val cmpLT : cmpRec =
+    {ii = fn (a : int, b) => a < b, rr = Real.<, ll = fn (a : Int64.int, b) => a < b}
+  val cmpGT : cmpRec =
+    {ii = fn (a : int, b) => a > b, rr = Real.>, ll = fn (a : Int64.int, b) => a > b}
+  val cmpLTE : cmpRec =
+    {ii = fn (a : int, b) => a <= b, rr = Real.<=,
+     ll = fn (a : Int64.int, b) => a <= b}
+  val cmpGTE : cmpRec =
+    {ii = fn (a : int, b) => a >= b, rr = Real.>=,
+     ll = fn (a : Int64.int, b) => a >= b}
 
   fun asWord32 i = Word32.fromLargeInt (Int.toLarge i)
 
@@ -217,6 +282,8 @@ structure Interpreter = struct
                 | B.PUSH_UNIT => (push stack CUnit; setTopIp nextIp; true)
                 | B.PUSH_I32 x =>
                     (push stack (CInt (Int32.toInt x)); setTopIp nextIp; true)
+                | B.PUSH_I64 x => (push stack (CI64 x); setTopIp nextIp; true)
+                | B.PUSH_F64 r => (push stack (CF64 r); setTopIp nextIp; true)
                 | B.PUSH_BOOL b => (push stack (CBool b); setTopIp nextIp; true)
                 | B.PUSH_STRING i => (push stack (CStrIdx i); setTopIp nextIp; true)
                 (* i32 arithmetic wraps mod 2^32 (two's-complement) to match the
@@ -247,12 +314,49 @@ structure Interpreter = struct
                       | _ => raise Fail "interpreter: NEG_I32";
                       setTopIp nextIp;
                       true)
-                | B.EQ => (cmp (fn (a, b) => a = b) stack; setTopIp nextIp; true)
-                | B.NEQ => (cmp (fn (a, b) => a <> b) stack; setTopIp nextIp; true)
-                | B.LT => (cmp (fn (a, b) => a < b) stack; setTopIp nextIp; true)
-                | B.GT => (cmp (fn (a, b) => a > b) stack; setTopIp nextIp; true)
-                | B.LTE => (cmp (fn (a, b) => a <= b) stack; setTopIp nextIp; true)
-                | B.GTE => (cmp (fn (a, b) => a >= b) stack; setTopIp nextIp; true)
+                (* VMF-011: i64 wraps mod 2^64 (Word64); div/mod truncate toward
+                   zero (Int64.quot/rem). *)
+                | B.ADD_I64 => (arithLL (fn (a, b) => unw64 (Word64.+ (w64 a, w64 b))) stack; setTopIp nextIp; true)
+                | B.SUB_I64 => (arithLL (fn (a, b) => unw64 (Word64.- (w64 a, w64 b))) stack; setTopIp nextIp; true)
+                | B.MUL_I64 => (arithLL (fn (a, b) => unw64 (Word64.* (w64 a, w64 b))) stack; setTopIp nextIp; true)
+                | B.DIV_I64 =>
+                    ( case !stack of
+                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: division by zero" else ()
+                      | _ => ();
+                      arithLL (fn (a, b) => Int64.quot (a, b)) stack;
+                      setTopIp nextIp;
+                      true)
+                | B.MOD_I64 =>
+                    ( case !stack of
+                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: modulo by zero" else ()
+                      | _ => ();
+                      arithLL (fn (a, b) => Int64.rem (a, b)) stack;
+                      setTopIp nextIp;
+                      true)
+                | B.NEG_I64 =>
+                    ( case pop stack of
+                        CI64 x => push stack (CI64 (unw64 (Word64.~ (w64 x))))
+                      | _ => raise Fail "interpreter: NEG_I64";
+                      setTopIp nextIp;
+                      true)
+                (* VMF-011: f64 ops are plain IEEE-754 (DIV_F64 has no zero check;
+                   x /. 0.0 yields inf/nan per IEEE). *)
+                | B.ADD_F64 => (arithFF Real.+ stack; setTopIp nextIp; true)
+                | B.SUB_F64 => (arithFF Real.- stack; setTopIp nextIp; true)
+                | B.MUL_F64 => (arithFF Real.* stack; setTopIp nextIp; true)
+                | B.DIV_F64 => (arithFF Real./ stack; setTopIp nextIp; true)
+                | B.NEG_F64 =>
+                    ( case pop stack of
+                        CF64 x => push stack (CF64 (Real.~ x))
+                      | _ => raise Fail "interpreter: NEG_F64";
+                      setTopIp nextIp;
+                      true)
+                | B.EQ => (cmp cmpEQ stack; setTopIp nextIp; true)
+                | B.NEQ => (cmp cmpNEQ stack; setTopIp nextIp; true)
+                | B.LT => (cmp cmpLT stack; setTopIp nextIp; true)
+                | B.GT => (cmp cmpGT stack; setTopIp nextIp; true)
+                | B.LTE => (cmp cmpLTE stack; setTopIp nextIp; true)
+                | B.GTE => (cmp cmpGTE stack; setTopIp nextIp; true)
                 | B.AND =>
                     let val b = pop stack
                         val a = pop stack
