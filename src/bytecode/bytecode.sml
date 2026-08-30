@@ -67,92 +67,41 @@ structure Bytecode = struct
     end
 
   local
-    (* Portable IEEE-754 binary64 <-> little-endian bytes, reconstructed
-       from the sign / exponent / mantissa fields with pure Basis Real
-       operations -- NO Unsafe.cast.
-
-       Unsafe.cast between `real` and `Word64.word` is not a reliable bit
-       reinterpretation across SML/NJ versions: under SML/NJ 110.99.9 (the
-       GitHub Actions runner) it mis-decoded a large-exponent literal such
-       as 2^52, so `frac_floor_of_nonneg`'s ensures aborted under the
-       sv0-mathlib per-fixture check while every small-magnitude f64
-       program still passed. It happened to work under SML/NJ 2026.1 (the
-       dev machine). See sv0-mathlib BUGS.md, "Per-fixture value check".
-
-       The .sv0b container stores the 64 IEEE bits little-endian (byte 0 =
-       bits 7:0), matching the sv0 native emitter's two encode_i32_le
-       words. *)
-    val fracMask : LargeWord.word = 0wxFFFFFFFFFFFFF   (* low 52 bits *)
-    val twoPow52 : real = 4503599627370496.0
-
-    fun assembleLe (v : Word8Vector.vector) (i : int) : LargeWord.word =
-      List.foldl
-        (fn (k, acc) => LargeWord.orb (acc,
-            LargeWord.<< (Word8.toLargeWord (Word8Vector.sub (v, i + k)),
-                          Word.fromInt (k * 8))))
-        0w0 [0, 1, 2, 3, 4, 5, 6, 7]
-
-    fun toBytesLe (bits : LargeWord.word) : Word8Vector.vector =
-      Word8Vector.tabulate (8, fn k =>
-        Word8.fromLargeWord
-          (LargeWord.andb (LargeWord.>> (bits, Word.fromInt (k * 8)), 0wxFF)))
-
-    fun bitsToReal (bits : LargeWord.word) : real =
+    (* SML/NJ: IEEE f64 via word bit pattern (little-endian load/store). *)
+    fun word64Le (w : Word64.word) : Word8Vector.vector =
       let
-        val sgn  = if LargeWord.andb (LargeWord.>> (bits, 0w63), 0w1) = 0w1
-                   then ~1.0 else 1.0
-        val expF = LargeWord.toInt (LargeWord.andb (LargeWord.>> (bits, 0w52), 0wx7FF))
-        val frac = LargeWord.andb (bits, fracMask)
-        val fracR = Real.fromLargeInt (LargeWord.toLargeInt frac)
+        val lw = Word64.toLarge w
+        val a = Word8Array.array (8, 0w0)
+        fun set j =
+          Word8Array.update (a, j,
+            Word8.fromLargeWord
+              (LargeWord.andb (LargeWord.>> (lw, Word.fromInt (j * 8)), 0wxFF)))
+        val () = List.app set [0, 1, 2, 3, 4, 5, 6, 7]
       in
-        if expF = 2047 then
-          (if frac = 0w0 then sgn * Real.posInf else 0.0 / 0.0) (* NaN payload not preserved *)
-        else if expF = 0 then
-          sgn * Real.fromManExp {man = fracR, exp = ~1074}      (* subnormal / zero *)
-        else
-          sgn * Real.fromManExp {man = fracR + twoPow52, exp = expF - 1075}
+        Word8Array.vector a
       end
 
-    fun realToBits (r : real) : LargeWord.word =
-      if Real.isNan r then 0wx7FF8000000000000
-      else if Real.== (r, Real.posInf) then 0wx7FF0000000000000
-      else if Real.== (r, Real.negInf) then 0wxFFF0000000000000
-      else
-        let
-          val s : LargeWord.word =
-            if Real.signBit r then 0wx8000000000000000 else 0w0
-        in
-          if Real.== (r, 0.0) then s   (* +0.0 and -0.0; sign carried by s *)
-          else
-            let
-              val a = Real.abs r
-              val {man = m, exp = e} = Real.toManExp a (* a = m*2^e, m in [0.5,1) *)
-              val bigE = e - 1               (* IEEE unbiased exponent of a *)
-            in
-              if bigE >= ~1022 then          (* normal *)
-                let
-                  val mant53 = Real.fromManExp {man = m, exp = 53} (* [2^52, 2^53) *)
-                  val mantI  = Real.toLargeInt IEEEReal.TO_NEAREST mant53
-                  val frac   = LargeWord.andb (LargeWord.fromLargeInt mantI, fracMask)
-                  val expB   = LargeWord.fromInt (bigE + 1023)
-                in
-                  LargeWord.orb (s, LargeWord.orb (LargeWord.<< (expB, 0w52), frac))
-                end
-              else                            (* subnormal: value = frac * 2^~1074 *)
-                let
-                  val fracR = Real.fromManExp {man = m, exp = e + 1074}
-                  val fracI = Real.toLargeInt IEEEReal.TO_NEAREST fracR
-                  val frac  = LargeWord.andb (LargeWord.fromLargeInt fracI, fracMask)
-                in
-                  LargeWord.orb (s, frac)
-                end
-            end
-        end
+    fun word64FromVecLe (v : Word8Vector.vector) (i : int) : Word64.word =
+      let
+        val lw =
+          List.foldl
+            (fn (k, acc) =>
+              LargeWord.orb (acc,
+                LargeWord.<< (Word8.toLargeWord (Word8Vector.sub (v, i + k)), Word.fromInt (k * 8)))) 0w0
+            (List.tabulate (8, fn x => x))
+      in
+        Word64.fromLarge lw
+      end
   in
-    fun f64Le (r : real) : Word8Vector.vector = toBytesLe (realToBits r)
+    fun f64Le (r : real) : Word8Vector.vector =
+      let val w : Word64.word = Unsafe.cast r in word64Le w end
 
     fun f64AtVec (v : Word8Vector.vector) (i : int) : real * int =
-      (bitsToReal (assembleLe v i), i + 8)
+      let val w = word64FromVecLe v i
+          val r : real = Unsafe.cast w
+      in
+        (r, i + 8)
+      end
   end
 
   fun cat (chunks : Word8Vector.vector list) : Word8Vector.vector =
