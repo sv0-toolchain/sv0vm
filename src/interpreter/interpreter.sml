@@ -102,22 +102,36 @@ structure Interpreter = struct
   fun w64 (x : Int64.int) : Word64.word = Word64.fromLargeInt (Int64.toLarge x)
   fun unw64 (w : Word64.word) : Int64.int = Int64.fromLarge (Word64.toLargeIntX w)
 
+  (* VMF-008: the emitter picks *_F64 / *_I64 from the combined operand category,
+     so an integer literal in an f64/i64 binop (`0 - 2147483648`, `1.0 + x`)
+     arrives as a plain CInt. Coerce it -- matches the C backend's implicit
+     promotion of the narrower operand. *)
+  fun asF64 c =
+    case c of
+      CF64 r => r
+    | CInt i => Real.fromInt i
+    | CI64 i => Real.fromLargeInt (Int64.toLarge i)
+    | CBool b => if b then 1.0 else 0.0
+    | _ => raise Fail "interpreter: f64 arithmetic on non-number"
+  fun asI64 c =
+    case c of
+      CI64 i => i
+    | CInt i => Int64.fromInt i
+    | CBool b => if b then (1 : Int64.int) else (0 : Int64.int)
+    | _ => raise Fail "interpreter: i64 arithmetic on non-integer"
+
   fun arithFF opFn stack =
     let val b = pop stack
         val a = pop stack
     in
-      case (a, b) of
-        (CF64 x, CF64 y) => push stack (CF64 (opFn (x, y)))
-      | _ => raise Fail "interpreter: f64 arithmetic on non-f64"
+      push stack (CF64 (opFn (asF64 a, asF64 b)))
     end
 
   fun arithLL opFn stack =
     let val b = pop stack
         val a = pop stack
     in
-      case (a, b) of
-        (CI64 x, CI64 y) => push stack (CI64 (opFn (x, y)))
-      | _ => raise Fail "interpreter: i64 arithmetic on non-i64"
+      push stack (CI64 (opFn (asI64 a, asI64 b)))
     end
 
   (* C-style: bool promotes to 0/1 for relational ops (forall/exists lowering uses pred == 0). *)
@@ -146,6 +160,12 @@ structure Interpreter = struct
         (CInt x, CInt y) => push stack (CBool (ii (x, y)))
       | (CI64 x, CI64 y) => push stack (CBool (ll (x, y)))
       | (CF64 x, CF64 y) => push stack (CBool (rr (x, y)))
+      (* mixed width (VMF-008): one operand is a plain literal -- coerce to the
+         wider/float type, as the C backend does. Float beats i64 beats int. *)
+      | (CF64 _, _) => push stack (CBool (rr (asF64 a, asF64 b)))
+      | (_, CF64 _) => push stack (CBool (rr (asF64 a, asF64 b)))
+      | (CI64 _, _) => push stack (CBool (ll (asI64 a, asI64 b)))
+      | (_, CI64 _) => push stack (CBool (ll (asI64 a, asI64 b)))
       | (CBool _, _) =>
           push stack (CBool (ii (cellAsIntForCmp a, cellAsIntForCmp b)))
       | (_, CBool _) =>
