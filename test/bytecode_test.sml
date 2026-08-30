@@ -122,6 +122,52 @@ in
     runI [p (~2147483648), p (~1), Bytecode.DIV_I32, Bytecode.RETURN], ~2147483648)
 end
 
+(* ---- PUSH_F64 bit-pattern round-trip (sv0-mathlib per-fixture check /
+   BUGS.md): the old Unsafe.cast real<->Word64 mis-decoded large-exponent
+   values such as 2^52 under SML/NJ 110.99.9, aborting frac_floor_of_nonneg's
+   ensures. The field-math codec must round-trip every normal magnitude and
+   the special values exactly, and lay the 64 IEEE bits down little-endian. ---- *)
+local
+  fun rt (r : real) : real =
+    case Bytecode.decodeInsnVec (Bytecode.encodeInsn (Bytecode.PUSH_F64 r)) 0 of
+      (Bytecode.PUSH_F64 x, _) => x
+    | _ => raise Fail "f64 round-trip: not PUSH_F64"
+  fun same (a, b) =
+    (Real.isNan a andalso Real.isNan b)
+    orelse (Real.== (a, b) andalso (Real.signBit a = Real.signBit b
+                                    orelse not (Real.== (a, 0.0))))
+  fun chk (name, r) =
+    if same (r, rt r) then ()
+    else raise Fail ("f64 round-trip " ^ name ^ ": "
+                     ^ Real.fmt (StringCvt.GEN (SOME 17)) r ^ " -> "
+                     ^ Real.fmt (StringCvt.GEN (SOME 17)) (rt r))
+  (* on-disk bytes must be the IEEE-754 pattern, little-endian (byte 0 = bits 7:0) *)
+  fun bytesLe (r : real) =
+    let val v = Bytecode.encodeInsn (Bytecode.PUSH_F64 r)
+    in String.concatWith "" (List.tabulate (8, fn i =>
+         StringCvt.padLeft #"0" 2
+           (Word8.fmt StringCvt.HEX (Word8Vector.sub (v, i + 1))))) end
+  fun chkBytes (name, r, hex) =
+    if bytesLe r = hex then ()
+    else raise Fail ("f64 bytes " ^ name ^ ": got " ^ bytesLe r ^ " want " ^ hex)
+in
+  val () = List.app chk
+    [ ("+0.0", 0.0), ("-0.0", ~0.0), ("1.0", 1.0), ("-1.0", ~1.0), ("2.0", 2.0),
+      ("0.5", 0.5), ("2.5", 2.5), ("-2.5", ~2.5), ("3.4", 3.4), ("-3.4", ~3.4),
+      ("2^52", 4503599627370496.0), ("2^53", 9007199254740992.0),
+      ("2^52-1", 4503599627370495.0), ("pi/2", 1.5707963267948966),
+      ("just below 2", 1.9999999999999998), ("just above 2", 2.0000000000000004),
+      ("12345678901234.0", 12345678901234.0), ("1e10", 1e10), ("1e~10", 1e~10),
+      ("1e300", 1e300), ("1e~300", 1e~300), ("0.1", 0.1), ("0.3", 0.3),
+      ("+inf", Real.posInf), ("-inf", Real.negInf), ("nan", 0.0 / 0.0) ]
+  val () = List.app chkBytes
+    [ ("2^52", 4503599627370496.0, "0000000000003043"),
+      ("1.0",  1.0,                "000000000000F03F"),
+      ("2.5",  2.5,                "0000000000000440"),
+      ("-0.0", ~0.0,               "0000000000000080"),
+      ("+inf", Real.posInf,        "000000000000F07F") ]
+end
+
 val () = print "bytecode tests: OK\n"
 
 (* ===================================================================== *)
