@@ -278,6 +278,50 @@ structure Interpreter = struct
              fn k => if k = i then v else List.nth (old, k))
         end
 
+      (* Slices (SS-U03c). A slice is an int handle with SV0_SLICE_TAG set in
+         a high bit (matches the C runtime's 0x40000000), indexing a side
+         table of (baseVec, offset, len) triples that always resolve to a
+         root Vec. Re-slicing composes the offset. Bounds are checked before
+         any access and fail closed via `raise Fail`, mirroring the C
+         backend's sv0_panic("slice: ...") -- same observable fault class. *)
+      val sv0SliceTag : int = 0x40000000
+      val dynSlices : (int * int * int) list ref = ref []
+      val dynSliceCount = ref 0
+      fun sliceIntern (base, off, len) =
+        let val idx = !dynSliceCount
+        in dynSlices := !dynSlices @ [(base, off, len)];
+           dynSliceCount := !dynSliceCount + 1;
+           idx + sv0SliceTag
+        end
+      fun sliceTriple h = List.nth (!dynSlices, h - sv0SliceTag)
+      fun isSlice h = h >= sv0SliceTag
+      (* base Vec + starting offset of a Vec/array handle OR a slice handle *)
+      fun viewBaseOff h =
+        if isSlice h then let val (b, ofs, _) = sliceTriple h in (b, ofs) end
+        else (h, 0)
+      fun viewLen h =
+        if isSlice h then let val (_, _, l) = sliceTriple h in l end
+        else vecLen h
+      fun sliceFromView (h, lo, hi) =
+        let val n = viewLen h
+        in if lo < 0 orelse hi < lo orelse hi > n
+           then raise Fail "slice: range out of bounds"
+           else let val (b, ofs) = viewBaseOff h
+                in sliceIntern (b, ofs + lo, hi - lo) end
+        end
+      fun sliceGet (sh, i) =
+        let val (b, ofs, l) = sliceTriple sh
+        in if i < 0 orelse i >= l then raise Fail "slice: index out of bounds"
+           else vecGet b (ofs + i)
+        end
+      fun sliceSet (sh, i, v) =
+        let val (b, ofs, l) = sliceTriple sh
+        in if i < 0 orelse i >= l then raise Fail "slice: index out of bounds"
+           else vecSet b (ofs + i) v
+        end
+      fun idxGet (h, i) = if isSlice h then sliceGet (h, i) else vecGet h i
+      fun idxSet (h, i, v) = if isSlice h then sliceSet (h, i, v) else vecSet h i v
+
       val frames = ref ([] : activ list)
 
       fun setTopIp newIp =
@@ -614,6 +658,31 @@ structure Interpreter = struct
                              push stack (CStrIdx idx); setTopIp nextIp; true
                            end
                        | _ => raise Fail "interpreter: read_dir expects string index")
+                    else if bid = 30 then
+                      (case (pop stack, pop stack, pop stack) of
+                        (CInt hi, CInt lo, CInt h) =>
+                          (push stack (CInt (sliceFromView (h, lo, hi))); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: slice_from_vec expects handle and two ints")
+                    else if bid = 31 then
+                      (case pop stack of
+                        CInt h =>
+                          (push stack (CInt (sliceFromView (h, 0, viewLen h))); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: slice_full_vec expects handle")
+                    else if bid = 32 then
+                      (case (pop stack, pop stack) of
+                        (CInt i, CInt h) =>
+                          (push stack (CInt (idxGet (h, i))); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: idx_get expects handle and int")
+                    else if bid = 33 then
+                      (case (pop stack, pop stack, pop stack) of
+                        (CInt v, CInt i, CInt h) =>
+                          (idxSet (h, i, v); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: idx_set expects handle, int, int")
+                    else if bid = 34 then
+                      (case pop stack of
+                        CInt h =>
+                          (push stack (CInt (viewLen h)); setTopIp nextIp; true)
+                      | _ => raise Fail "interpreter: view_len expects handle")
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
