@@ -160,8 +160,10 @@ structure Bytecode = struct
     | PUSH_STRING of int
     | ADD_I32 | SUB_I32 | MUL_I32 | DIV_I32 | MOD_I32 | NEG_I32
     | ADD_I64 | SUB_I64 | MUL_I64 | DIV_I64 | MOD_I64 | NEG_I64
+    | DIV_U64 | MOD_U64                       (* SS-U14: unsigned wide div/rem *)
     | ADD_F64 | SUB_F64 | MUL_F64 | DIV_F64 | NEG_F64
     | EQ | NEQ | LT | GT | LTE | GTE
+    | LT_U64 | GT_U64 | LTE_U64 | GTE_U64     (* SS-U14: unsigned ordered compare *)
     | AND | OR | NOT
     | BIT_AND | BIT_OR | BIT_XOR | BIT_NOT | SHL | SHR
     | LOAD_LOCAL of int
@@ -209,6 +211,8 @@ structure Bytecode = struct
     | DIV_I64 => bytes1 (w8 35)
     | MOD_I64 => bytes1 (w8 36)
     | NEG_I64 => bytes1 (w8 37)
+    | DIV_U64 => bytes1 (w8 38)
+    | MOD_U64 => bytes1 (w8 39)
     | ADD_F64 => bytes1 (w8 48)
     | SUB_F64 => bytes1 (w8 49)
     | MUL_F64 => bytes1 (w8 50)
@@ -220,6 +224,10 @@ structure Bytecode = struct
     | GT => bytes1 (w8 67)
     | LTE => bytes1 (w8 68)
     | GTE => bytes1 (w8 69)
+    | LT_U64 => bytes1 (w8 70)
+    | GT_U64 => bytes1 (w8 71)
+    | LTE_U64 => bytes1 (w8 72)
+    | GTE_U64 => bytes1 (w8 73)
     | AND => bytes1 (w8 80)
     | OR => bytes1 (w8 81)
     | NOT => bytes1 (w8 82)
@@ -285,6 +293,8 @@ structure Bytecode = struct
       | 35 => (DIV_I64, i + 1)
       | 36 => (MOD_I64, i + 1)
       | 37 => (NEG_I64, i + 1)
+      | 38 => (DIV_U64, i + 1)
+      | 39 => (MOD_U64, i + 1)
       | 48 => (ADD_F64, i + 1)
       | 49 => (SUB_F64, i + 1)
       | 50 => (MUL_F64, i + 1)
@@ -296,6 +306,10 @@ structure Bytecode = struct
       | 67 => (GT, i + 1)
       | 68 => (LTE, i + 1)
       | 69 => (GTE, i + 1)
+      | 70 => (LT_U64, i + 1)
+      | 71 => (GT_U64, i + 1)
+      | 72 => (LTE_U64, i + 1)
+      | 73 => (GTE_U64, i + 1)
       | 80 => (AND, i + 1)
       | 81 => (OR, i + 1)
       | 82 => (NOT, i + 1)

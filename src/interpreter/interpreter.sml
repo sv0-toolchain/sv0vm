@@ -189,6 +189,17 @@ structure Interpreter = struct
     {ii = fn (a : int, b) => a >= b, rr = Real.>=,
      ll = fn (a : Int64.int, b) => a >= b}
 
+  (* SS-U14: unsigned (u64 / usize) ordered comparison. The emitter selects
+     LT_U64..GTE_U64 for unsigned operands; both operands are widened to
+     Word64 so 18446744073709551615 (stored as the Int64 value -1) compares
+     ABOVE 0, matching the C backend's uint64_t. *)
+  fun cmpU (wfn : Word64.word * Word64.word -> bool) stack =
+    let val b = pop stack
+        val a = pop stack
+    in
+      push stack (CBool (wfn (w64 (asI64 a), w64 (asI64 b))))
+    end
+
   fun asWord32 i = Word32.fromLargeInt (Int.toLarge i)
 
   (* A runtime contract violation (BH-10c): raised at CONTRACT_CHECK and caught
@@ -403,6 +414,21 @@ structure Interpreter = struct
                       | _ => raise Fail "interpreter: NEG_I64";
                       setTopIp nextIp;
                       true)
+                (* SS-U14: unsigned wide div / rem. *)
+                | B.DIV_U64 =>
+                    ( case !stack of
+                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: division by zero" else ()
+                      | _ => ();
+                      arithLL (fn (a, b) => unw64 (Word64.div (w64 a, w64 b))) stack;
+                      setTopIp nextIp;
+                      true)
+                | B.MOD_U64 =>
+                    ( case !stack of
+                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: modulo by zero" else ()
+                      | _ => ();
+                      arithLL (fn (a, b) => unw64 (Word64.mod (w64 a, w64 b))) stack;
+                      setTopIp nextIp;
+                      true)
                 (* VMF-011: f64 ops are plain IEEE-754 (DIV_F64 has no zero check;
                    x /. 0.0 yields inf/nan per IEEE). *)
                 | B.ADD_F64 => (arithFF Real.+ stack; setTopIp nextIp; true)
@@ -421,6 +447,10 @@ structure Interpreter = struct
                 | B.GT => (cmp cmpGT stack; setTopIp nextIp; true)
                 | B.LTE => (cmp cmpLTE stack; setTopIp nextIp; true)
                 | B.GTE => (cmp cmpGTE stack; setTopIp nextIp; true)
+                | B.LT_U64 => (cmpU Word64.< stack; setTopIp nextIp; true)
+                | B.GT_U64 => (cmpU Word64.> stack; setTopIp nextIp; true)
+                | B.LTE_U64 => (cmpU Word64.<= stack; setTopIp nextIp; true)
+                | B.GTE_U64 => (cmpU Word64.>= stack; setTopIp nextIp; true)
                 | B.AND =>
                     let val b = pop stack
                         val a = pop stack
