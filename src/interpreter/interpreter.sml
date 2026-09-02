@@ -505,6 +505,23 @@ structure Interpreter = struct
                         in Word32.toIntX (Word32.~>> (asWord32 a, sh)) end) stack;
                       setTopIp nextIp;
                       true)
+                (* SS-U14 residual #1: wide (64-bit) shifts. Count is taken mod
+                   64; i64 `>>` sign-extends (~>>), u64 `>>` is logical (>>). *)
+                | B.SHL_I64 =>
+                    ( arithLL (fn (a, b) =>
+                        unw64 (Word64.<< (w64 a, Word.fromInt (Int64.toInt b mod 64)))) stack;
+                      setTopIp nextIp;
+                      true)
+                | B.SHR_I64 =>
+                    ( arithLL (fn (a, b) =>
+                        unw64 (Word64.~>> (w64 a, Word.fromInt (Int64.toInt b mod 64)))) stack;
+                      setTopIp nextIp;
+                      true)
+                | B.SHR_U64 =>
+                    ( arithLL (fn (a, b) =>
+                        unw64 (Word64.>> (w64 a, Word.fromInt (Int64.toInt b mod 64)))) stack;
+                      setTopIp nextIp;
+                      true)
                 | B.LOAD_LOCAL s =>
                     (push stack (Array.sub (loc, s)); setTopIp nextIp; true)
                 | B.STORE_LOCAL s =>
