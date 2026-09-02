@@ -568,7 +568,14 @@ structure Interpreter = struct
                       (case (pop stack, pop stack) of
                         (CInt idx, CStrIdx si) =>
                           let val s = lookupStr si
-                          in push stack (CInt (Char.ord (String.sub (s, idx)))); setTopIp nextIp; true end
+                              (* SS-U02c: mirror the C backend's sv0_str_char_at
+                                 -- `idx == size s` yields 0 (no read), so the
+                                 compiler scanners' one-past-the-end idiom works
+                                 on the VM too; a real over-range still faults
+                                 (String.sub raises Subscript). *)
+                              val b = if idx = String.size s then 0
+                                      else Char.ord (String.sub (s, idx))
+                          in push stack (CInt b); setTopIp nextIp; true end
                       | _ => raise Fail "interpreter: string_char_at expects string index and int")
                     else if bid = 6 then
                       (case (pop stack, pop stack, pop stack) of
