@@ -634,25 +634,35 @@ structure Interpreter = struct
                           in push stack (CStrIdx idx); setTopIp nextIp; true end
                       | _ => raise Fail "interpreter: string_concat expects two string indices")
                     else if bid = 5 then
-                      (case (pop stack, pop stack) of
-                        (CInt idx, CStrIdx si) =>
-                          let val s = lookupStr si
-                              (* SS-U02c: mirror the C backend's sv0_str_char_at
-                                 -- `idx == size s` yields 0 (no read), so the
-                                 compiler scanners' one-past-the-end idiom works
-                                 on the VM too; a real over-range still faults
-                                 (String.sub raises Subscript). *)
-                              val b = if idx = String.size s then 0
-                                      else Char.ord (String.sub (s, idx))
-                          in push stack (CInt b); setTopIp nextIp; true end
-                      | _ => raise Fail "interpreter: string_char_at expects string index and int")
+                      (* SS-U15: `idx` may arrive as CI64 when a `usize` loop
+                         counter / offset indexes text (strings_text). *)
+                      let val idx = idxInt (pop stack)
+                          val sc = pop stack
+                      in case sc of
+                           CStrIdx si =>
+                             let val s = lookupStr si
+                                 (* SS-U02c: mirror the C backend's sv0_str_char_at
+                                    -- `idx == size s` yields 0 (no read), so the
+                                    compiler scanners' one-past-the-end idiom works
+                                    on the VM too; a real over-range still faults
+                                    (String.sub raises Subscript). *)
+                                 val b = if idx = String.size s then 0
+                                         else Char.ord (String.sub (s, idx))
+                             in push stack (CInt b); setTopIp nextIp; true end
+                         | _ => raise Fail "interpreter: string_char_at expects string index and int"
+                      end
                     else if bid = 6 then
-                      (case (pop stack, pop stack, pop stack) of
-                        (CInt len, CInt start, CStrIdx si) =>
-                          let val s = String.substring (lookupStr si, start, len)
-                              val idx = addStr s
-                          in push stack (CStrIdx idx); setTopIp nextIp; true end
-                      | _ => raise Fail "interpreter: string_substr expects string index and two ints")
+                      (* SS-U15: `start` / `len` may arrive as CI64 (usize). *)
+                      let val len = idxInt (pop stack)
+                          val start = idxInt (pop stack)
+                          val sc = pop stack
+                      in case sc of
+                           CStrIdx si =>
+                             let val s = String.substring (lookupStr si, start, len)
+                                 val idx = addStr s
+                             in push stack (CStrIdx idx); setTopIp nextIp; true end
+                         | _ => raise Fail "interpreter: string_substr expects string index and two ints"
+                      end
                     else if bid = 7 then
                       (push stack (CInt (vecNew ())); setTopIp nextIp; true)
                     else if bid = 8 then
