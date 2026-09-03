@@ -87,13 +87,25 @@ structure Interpreter = struct
       go n []
     end
 
+  (* A wide value (CI64) can reach a 32-bit arithmetic opcode when it was
+     narrowed to an i32 context -- e.g. a `usize` enum payload bound as `i32`
+     in a match arm, then used in i32 arithmetic. Match the C backend's
+     implicit narrowing: take the low 32 bits, two's-complement. *)
+  fun narrowI32 (x : Int64.int) : int =
+    Word32.toIntX (Word32.fromLargeInt (Int64.toLarge x))
   fun arithII opFn stack =
     let val b = pop stack
         val a = pop stack
+        fun ii c =
+          case c of
+            CInt x => x
+          | CI64 x => narrowI32 x
+          | CBool z => (if z then 1 else 0)
+          | _ => raise Fail "interpreter: arithmetic on non-int"
     in
       case (a, b) of
         (CInt x, CInt y) => push stack (CInt (opFn (x, y)))
-      | _ => raise Fail "interpreter: arithmetic on non-int"
+      | _ => push stack (CInt (opFn (ii a, ii b)))
     end
 
   (* VMF-011: f64 / i64 stack arithmetic. i64 add/sub/mul wrap mod 2^64 via
