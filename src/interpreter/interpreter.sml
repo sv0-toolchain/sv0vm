@@ -762,6 +762,12 @@ structure Interpreter = struct
     in
       case !stack of
         CInt code :: _ => code
+      (* A `main` that returns an i64 / u64 / usize expression value leaves a
+         CI64 on the stack (e.g. `return a + b` where a,b : usize goes through
+         ADD_I64). Coerce it the way the OS treats a process exit status --
+         the low 8 bits -- instead of falling through to `_ => 0`. *)
+      | CI64 code :: _ => Int64.toInt (Int64.mod (code, 256))
+      | CBool b :: _ => (if b then 1 else 0)
       | [] => 0
       | _ => 0
     end
