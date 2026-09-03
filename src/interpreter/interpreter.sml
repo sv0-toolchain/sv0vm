@@ -764,6 +764,25 @@ structure Interpreter = struct
                     else if bid = 34 then
                       let val h = idxInt (pop stack)
                       in push stack (CInt (viewLen h)); setTopIp nextIp; true end
+                    (* SS-U16: string <-> byte-slice bridges for
+                       strings_text::from_utf8 / as_bytes. *)
+                    else if bid = 35 then
+                      let val h = idxInt (pop stack)
+                          val n = viewLen h
+                          val s = String.implode
+                                    (List.tabulate
+                                       (n, fn i => chr (Int.mod (idxGet (h, i), 256))))
+                      in push stack (CStrIdx (addStr s)); setTopIp nextIp; true end
+                    else if bid = 36 then
+                      (case pop stack of
+                        CStrIdx si =>
+                          let val s = lookupStr si
+                              val vh = vecNew ()
+                          in app (fn c => vecPush vh (Char.ord c))
+                                 (String.explode s);
+                             push stack (CInt vh); setTopIp nextIp; true
+                          end
+                      | _ => raise Fail "interpreter: string_byte_view expects a string index")
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
