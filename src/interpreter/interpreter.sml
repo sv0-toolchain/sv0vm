@@ -93,6 +93,16 @@ structure Interpreter = struct
      implicit narrowing: take the low 32 bits, two's-complement. *)
   fun narrowI32 (x : Int64.int) : int =
     Word32.toIntX (Word32.fromLargeInt (Int64.toLarge x))
+  (* A slice / Vec handle, index, or length is often `usize`-typed and so
+     arrives as CI64 (`i + 1` on a usize goes through ADD_I64). Every such
+     operand of the slice builtins (30-34) is a small non-negative int;
+     accept CInt or CI64. *)
+  fun idxInt c =
+    case c of
+      CInt n => n
+    | CI64 n => narrowI32 n
+    | CBool z => (if z then 1 else 0)
+    | _ => raise Fail "interpreter: expected an int handle/index"
   fun arithII opFn stack =
     let val b = pop stack
         val a = pop stack
@@ -725,30 +735,25 @@ structure Interpreter = struct
                            end
                        | _ => raise Fail "interpreter: read_dir expects string index")
                     else if bid = 30 then
-                      (case (pop stack, pop stack, pop stack) of
-                        (CInt hi, CInt lo, CInt h) =>
-                          (push stack (CInt (sliceFromView (h, lo, hi))); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: slice_from_vec expects handle and two ints")
+                      let val hi = idxInt (pop stack)
+                          val lo = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in push stack (CInt (sliceFromView (h, lo, hi))); setTopIp nextIp; true end
                     else if bid = 31 then
-                      (case pop stack of
-                        CInt h =>
-                          (push stack (CInt (sliceFromView (h, 0, viewLen h))); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: slice_full_vec expects handle")
+                      let val h = idxInt (pop stack)
+                      in push stack (CInt (sliceFromView (h, 0, viewLen h))); setTopIp nextIp; true end
                     else if bid = 32 then
-                      (case (pop stack, pop stack) of
-                        (CInt i, CInt h) =>
-                          (push stack (CInt (idxGet (h, i))); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: idx_get expects handle and int")
+                      let val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in push stack (CInt (idxGet (h, i))); setTopIp nextIp; true end
                     else if bid = 33 then
-                      (case (pop stack, pop stack, pop stack) of
-                        (CInt v, CInt i, CInt h) =>
-                          (idxSet (h, i, v); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: idx_set expects handle, int, int")
+                      let val v = idxInt (pop stack)
+                          val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in idxSet (h, i, v); setTopIp nextIp; true end
                     else if bid = 34 then
-                      (case pop stack of
-                        CInt h =>
-                          (push stack (CInt (viewLen h)); setTopIp nextIp; true)
-                      | _ => raise Fail "interpreter: view_len expects handle")
+                      let val h = idxInt (pop stack)
+                      in push stack (CInt (viewLen h)); setTopIp nextIp; true end
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
