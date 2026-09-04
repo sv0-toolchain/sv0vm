@@ -229,8 +229,32 @@ structure Interpreter = struct
      returns exit code 1 — a clean abort, not an uncaught SML exception. *)
   exception ContractViolation of string
 
+  (* SS-U17 (sv0-strings BACKEND-004): owned-string allocation fault injection,
+     the VM peer of the C runtime's SV0_STR_FAIL_AT (SS-U02d). Each runtime
+     string-allocating builtin (concat=4, substr=6, from_bytes=35) that
+     produces a NON-empty string ticks the counter; when SV0_STR_FAIL_AT is
+     set and the tick reaches it, StrAllocFail is raised and caught like a
+     contract violation — the same "sv0 panic: string: allocation failed" on
+     stderr, exit code 1, no partial value. String literals are table-loaded
+     at program start on the VM, so (unlike C) they are not counted. *)
+  exception StrAllocFail
+
+  val strFailAt : int option =
+    case OS.Process.getEnv "SV0_STR_FAIL_AT" of
+      NONE => NONE
+    | SOME s => Int.fromString s
+  val strAllocN = ref 0
+  fun strAllocTick (produced : string) : unit =
+    if String.size produced = 0 then ()
+    else
+      ( strAllocN := !strAllocN + 1
+      ; case strFailAt of
+          SOME k => if !strAllocN = k then raise StrAllocFail else ()
+        | NONE => () )
+
   fun runWithStack (ld : loaded) (mainIdx : int) (stack : cell list ref) : int =
     let
+      val () = strAllocN := 0
       val funcs = #funcs ld
       val strings = #strings ld
       val dynStrings = ref ([] : string list)
@@ -630,6 +654,7 @@ structure Interpreter = struct
                       (case (pop stack, pop stack) of
                         (CStrIdx bi, CStrIdx ai) =>
                           let val s = lookupStr ai ^ lookupStr bi
+                              val () = strAllocTick s
                               val idx = addStr s
                           in push stack (CStrIdx idx); setTopIp nextIp; true end
                       | _ => raise Fail "interpreter: string_concat expects two string indices")
@@ -659,6 +684,7 @@ structure Interpreter = struct
                       in case sc of
                            CStrIdx si =>
                              let val s = String.substring (lookupStr si, start, len)
+                                 val () = strAllocTick s
                                  val idx = addStr s
                              in push stack (CStrIdx idx); setTopIp nextIp; true end
                          | _ => raise Fail "interpreter: string_substr expects string index and two ints"
@@ -772,6 +798,7 @@ structure Interpreter = struct
                           val s = String.implode
                                     (List.tabulate
                                        (n, fn i => chr (Int.mod (idxGet (h, i), 256))))
+                          val () = strAllocTick s
                       in push stack (CStrIdx (addStr s)); setTopIp nextIp; true end
                     else if bid = 36 then
                       (case pop stack of
@@ -804,6 +831,9 @@ structure Interpreter = struct
         (loop ()
          handle ContractViolation m =>
            ( TextIO.output (TextIO.stdErr, "sv0 contract violation: " ^ m ^ "\n")
+           ; stack := [CInt 1] )
+              | StrAllocFail =>
+           ( TextIO.output (TextIO.stdErr, "sv0 panic: string: allocation failed\n")
            ; stack := [CInt 1] ))
     in
       case !stack of
