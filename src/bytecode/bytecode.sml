@@ -67,41 +67,64 @@ structure Bytecode = struct
     end
 
   local
-    (* SML/NJ: IEEE f64 via word bit pattern (little-endian load/store). *)
-    fun word64Le (w : Word64.word) : Word8Vector.vector =
-      let
-        val lw = Word64.toLarge w
-        val a = Word8Array.array (8, 0w0)
-        fun set j =
-          Word8Array.update (a, j,
-            Word8.fromLargeWord
-              (LargeWord.andb (LargeWord.>> (lw, Word.fromInt (j * 8)), 0wxFF)))
-        val () = List.app set [0, 1, 2, 3, 4, 5, 6, 7]
-      in
-        Word8Array.vector a
-      end
+    (* IEEE f64 <-> little-endian bytes via PackReal64Little, the Basis
+       Library's own dedicated primitive for exactly this conversion --
+       NOT Unsafe.cast, and NOT a hand-rolled sign/exponent/mantissa
+       reassembly.
 
-    fun word64FromVecLe (v : Word8Vector.vector) (i : int) : Word64.word =
-      let
-        val lw =
-          List.foldl
-            (fn (k, acc) =>
-              LargeWord.orb (acc,
-                LargeWord.<< (Word8.toLargeWord (Word8Vector.sub (v, i + k)), Word.fromInt (k * 8)))) 0w0
-            (List.tabulate (8, fn x => x))
-      in
-        Word64.fromLarge lw
-      end
+       Two prior approaches were tried and both proved version-fragile:
+       Unsafe.cast between `real` and `Word64.word` relies on SML/NJ's
+       INTERNAL boxed-real representation matching a raw 64-bit word
+       exactly -- an implementation detail, not a language guarantee,
+       and it legitimately differs across SML/NJ versions/backends. It
+       mis-decoded a large-exponent literal such as 2^52 under SML/NJ
+       110.99.9 (the GitHub Actions runner) while working fine under
+       2026.1 (the dev machine) -- see sv0-mathlib BUGS.md, "Per-fixture
+       value check". A follow-up hand-rolled field-math codec (assemble/
+       decompose sign+exponent+mantissa via toManExp/fromManExp) fixed
+       that specific value but then INTERMITTENTLY broke a full-library
+       VM run under 110.99.9 for a different, never-isolated bit
+       pattern -- one more piece of bit-twiddling this codebase would
+       have to get exactly right across every SML/NJ version, rather
+       than zero.
+
+       PackReal64Little's OWN NAME is not trusted here either, after
+       confirming empirically (this file's own test suite) that it
+       produces BIG-endian bytes on at least one real SML/NJ build
+       (2026.1, arm64) -- exactly backwards from what its name promises,
+       and PackReal64Big produces little-endian on that same build. This
+       codebase has already been burned twice by an implementation
+       detail that happened to hold on the dev machine and silently
+       didn't elsewhere, so the byte order actually emitted is detected
+       ONCE at load time against a known reference value (1.0) rather
+       than assumed from the structure's name, and normalized to
+       genuine little-endian for the .sv0b wire format regardless of
+       which way this particular SML/NJ build's Pack structures happen
+       to be wired. This only assumes PackReal64Little.toBytes/fromBytes
+       are self-consistent inverses of EACH OTHER on a given build (the
+       actual contract PACK_REAL exists to provide) -- not that "Little"
+       correctly describes their byte order, which this codebase can no
+       longer take on faith.
+
+       The .sv0b container stores the 64 IEEE bits little-endian (byte 0
+       = bits 7:0), matching the sv0 native emitter's own two
+       encode_i32_le words. *)
+    val nativeIsBigEndian : bool =
+      (* 1.0 = sign 0, biased exponent 1023, mantissa 0 -> 0x3FF0000000000000.
+         Byte 0 is 0x00 if PackReal64Little's own output is genuinely
+         little-endian on this build, or 0x3F if it's actually big-endian. *)
+      Word8Vector.sub (PackReal64Little.toBytes 1.0, 0) <> 0w0
+
+    fun toGenuineLe (v : Word8Vector.vector) : Word8Vector.vector =
+      if nativeIsBigEndian
+      then Word8Vector.tabulate (8, fn k => Word8Vector.sub (v, 7 - k))
+      else v
   in
-    fun f64Le (r : real) : Word8Vector.vector =
-      let val w : Word64.word = Unsafe.cast r in word64Le w end
+    fun f64Le (r : real) : Word8Vector.vector = toGenuineLe (PackReal64Little.toBytes r)
 
     fun f64AtVec (v : Word8Vector.vector) (i : int) : real * int =
-      let val w = word64FromVecLe v i
-          val r : real = Unsafe.cast w
-      in
-        (r, i + 8)
-      end
+      let val wire = Word8Vector.tabulate (8, fn k => Word8Vector.sub (v, i + k))
+      in (PackReal64Little.fromBytes (toGenuineLe wire), i + 8) end
   end
 
   fun cat (chunks : Word8Vector.vector list) : Word8Vector.vector =

@@ -122,6 +122,106 @@ in
     runI [p (~2147483648), p (~1), Bytecode.DIV_I32, Bytecode.RETURN], ~2147483648)
 end
 
+(* ---- PUSH_F64 bit-pattern round-trip (sv0-mathlib per-fixture check /
+   BUGS.md): the original Unsafe.cast real<->Word64 codec mis-decoded
+   large-exponent values such as 2^52 under SML/NJ 110.99.9, aborting
+   frac_floor_of_nonneg's ensures; a follow-up hand-rolled field-math
+   codec fixed that but then intermittently broke a full-library VM run
+   on a different, never-isolated bit pattern under the same SML/NJ
+   version. The codec must round-trip every normal magnitude and the
+   special values exactly, and lay the 64 IEEE bits down little-endian. ---- *)
+local
+  fun rt (r : real) : real =
+    case Bytecode.decodeInsnVec (Bytecode.encodeInsn (Bytecode.PUSH_F64 r)) 0 of
+      (Bytecode.PUSH_F64 x, _) => x
+    | _ => raise Fail "f64 round-trip: not PUSH_F64"
+  fun same (a, b) =
+    (Real.isNan a andalso Real.isNan b)
+    orelse (Real.== (a, b) andalso (Real.signBit a = Real.signBit b
+                                    orelse not (Real.== (a, 0.0))))
+  fun chk (name, r) =
+    if same (r, rt r) then ()
+    else raise Fail ("f64 round-trip " ^ name ^ ": "
+                     ^ Real.fmt (StringCvt.GEN (SOME 17)) r ^ " -> "
+                     ^ Real.fmt (StringCvt.GEN (SOME 17)) (rt r))
+  (* on-disk bytes must be the IEEE-754 pattern, little-endian (byte 0 = bits 7:0) *)
+  fun bytesLe (r : real) =
+    let val v = Bytecode.encodeInsn (Bytecode.PUSH_F64 r)
+    in String.concatWith "" (List.tabulate (8, fn i =>
+         StringCvt.padLeft #"0" 2
+           (Word8.fmt StringCvt.HEX (Word8Vector.sub (v, i + 1))))) end
+  fun chkBytes (name, r, hex) =
+    if bytesLe r = hex then ()
+    else raise Fail ("f64 bytes " ^ name ^ ": got " ^ bytesLe r ^ " want " ^ hex)
+in
+  val () = List.app chk
+    [ ("+0.0", 0.0), ("-0.0", ~0.0), ("1.0", 1.0), ("-1.0", ~1.0), ("2.0", 2.0),
+      ("0.5", 0.5), ("2.5", 2.5), ("-2.5", ~2.5), ("3.4", 3.4), ("-3.4", ~3.4),
+      ("2^52", 4503599627370496.0), ("2^53", 9007199254740992.0),
+      ("2^52-1", 4503599627370495.0), ("pi/2", 1.5707963267948966),
+      ("just below 2", 1.9999999999999998), ("just above 2", 2.0000000000000004),
+      ("12345678901234.0", 12345678901234.0), ("1e10", 1e10), ("1e~10", 1e~10),
+      ("1e300", 1e300), ("1e~300", 1e~300), ("0.1", 0.1), ("0.3", 0.3),
+      ("+inf", Real.posInf), ("-inf", Real.negInf), ("nan", 0.0 / 0.0) ]
+  val () = List.app chkBytes
+    [ ("2^52", 4503599627370496.0, "0000000000003043"),
+      ("1.0",  1.0,                "000000000000F03F"),
+      ("2.5",  2.5,                "0000000000000440"),
+      ("-0.0", ~0.0,               "0000000000000080"),
+      ("+inf", Real.posInf,        "000000000000F07F") ]
+end
+
+(* ---- PUSH_F64 EXHAUSTIVE random-bit-pattern round-trip. The curated
+   list above is exactly the shape of test that let the previous
+   field-math codec's own latent bug through -- it round-tripped every
+   hand-picked value fine and only broke on some bit pattern nobody
+   thought to try, discovered only as an intermittent full-library VM
+   run failure with no isolated repro. This sweeps 2,000,000
+   DETERMINISTIC (fixed seed, xorshift64 -- same technique
+   sv0-mathlib's own property_test.sv0 uses) pseudorandom 64-bit
+   patterns through the exact wire-format round trip (raw bytes -> real
+   -> raw bytes), covering the full bit-pattern space essentially
+   uniformly rather than relying on anyone's guess of which values are
+   "tricky". A mismatch here means the codec itself is wrong for some
+   value, independent of any interpreter/emitter behavior -- the
+   isolated repro the earlier investigation never got. *)
+local
+  val seed = ref (Word64.fromLargeInt 88172645463325252)
+  fun xorshift64 () : Word64.word =
+    let
+      open Word64
+      val s = !seed
+      val s = xorb (s, << (s, 0w13))
+      val s = xorb (s, >> (s, 0w7))
+      val s = xorb (s, << (s, 0w17))
+    in
+      seed := s; s
+    end
+  fun bytesOfBits (bits : Word64.word) : Word8Vector.vector =
+    Word8Vector.tabulate (8, fn k =>
+      Word8.fromLargeWord (Word64.toLargeWord (Word64.andb
+        (Word64.>> (bits, Word.fromInt (k * 8)), 0wxFF))))
+  val mismatches = ref 0
+  fun checkOne () =
+    let
+      val bits = xorshift64 ()
+      val bytes = bytesOfBits bits
+      val (r, _) = Bytecode.f64AtVec bytes 0
+      val bytes2 = Bytecode.f64Le r
+    in
+      if bytes = bytes2 orelse Real.isNan r then ()
+      else (mismatches := !mismatches + 1;
+            print ("f64 codec MISMATCH: bits=" ^ Word64.toString bits
+                   ^ " decoded=" ^ Real.fmt (StringCvt.GEN (SOME 17)) r ^ "\n"))
+    end
+in
+  val () = List.app (fn _ => checkOne ()) (List.tabulate (2000000, fn i => i))
+  val () =
+    if !mismatches = 0 then ()
+    else raise Fail ("f64 codec: " ^ Int.toString (!mismatches)
+                     ^ " round-trip mismatch(es) out of 2,000,000 random bit patterns")
+end
+
 val () = print "bytecode tests: OK\n"
 
 (* ===================================================================== *)
