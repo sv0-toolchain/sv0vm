@@ -4,6 +4,54 @@ structure Interpreter = struct
 
   structure B = Bytecode
 
+  (* DIAGNOSTIC (not a permanent feature): tracing for the still-open
+     intermittent frac_floor_of_nonneg VM-fixture-parity failure
+     (sv0-mathlib BUGS.md, "Per-fixture value check"). Confirmed so far:
+     the emitter's .sv0b output is byte-identical across repeated CI runs
+     (rules out emission-time nondeterminism), and running that SAME
+     fixed bytecode through this interpreter gives 20/20 self-consistent
+     results WITHIN one CI job but disagrees BETWEEN separate job
+     instances -- pointing at a CPU/host-dependent difference in how
+     THIS interpreter's f64 add/compare primitives behave, not GC timing
+     or randomness. This traces every f64 ADD/SUB/MUL/DIV and f64
+     LT/GT/LTE/GTE/EQ/NEQ comparison to stderr as exact IEEE-754 bit
+     patterns (not a decimal string, which could hide a genuine
+     last-bit divergence behind rounding in the print path itself) when
+     SV0VM_TRACE_F64 is set, so a failing CI job's trace can be diffed
+     byte-for-byte against a passing one's to find exactly which
+     operation first disagrees. Zero overhead when unset (checked once
+     at load time, not per-operation). *)
+  val traceF64Enabled : bool =
+    (case OS.Process.getEnv "SV0VM_TRACE_F64" of SOME _ => true | NONE => false)
+
+  val traceSeq = ref 0
+
+  fun realBitsHex (r : real) : string =
+    let
+      val v = PackReal64Little.toBytes r
+    in
+      String.concatWith "" (List.tabulate (8, fn i =>
+        StringCvt.padLeft #"0" 2 (Word8.fmt StringCvt.HEX (Word8Vector.sub (v, i)))))
+    end
+
+  fun traceF64Binop (opName : string) (a : real, b : real, r : real) : unit =
+    if not traceF64Enabled then () else
+    let val n = !traceSeq before traceSeq := !traceSeq + 1 in
+      TextIO.output (TextIO.stdErr,
+        "SV0VM_TRACE seq=" ^ Int.toString n ^ " " ^ opName ^
+        " a=" ^ realBitsHex a ^ " b=" ^ realBitsHex b ^
+        " r=" ^ realBitsHex r ^ "\n")
+    end
+
+  fun traceF64Cmp (opName : string) (a : real, b : real, r : bool) : unit =
+    if not traceF64Enabled then () else
+    let val n = !traceSeq before traceSeq := !traceSeq + 1 in
+      TextIO.output (TextIO.stdErr,
+        "SV0VM_TRACE seq=" ^ Int.toString n ^ " " ^ opName ^
+        " a=" ^ realBitsHex a ^ " b=" ^ realBitsHex b ^
+        " r=" ^ (if r then "true" else "false") ^ "\n")
+    end
+
   (* VMF-010: CF64/CI64 added for the sv0c-vm-float-parity work. The .sv0b
      decoder already produces PUSH_F64/PUSH_I64/*_F64/*_I64 (opcodes 5,6,32-37,
      48-52); the dispatch below now runs them instead of "opcode not implemented
@@ -142,11 +190,15 @@ structure Interpreter = struct
     | CBool b => if b then (1 : Int64.int) else (0 : Int64.int)
     | _ => raise Fail "interpreter: i64 arithmetic on non-integer"
 
-  fun arithFF opFn stack =
+  fun arithFFTraced (opName : string) opFn stack =
     let val b = pop stack
         val a = pop stack
+        val av = asF64 a
+        val bv = asF64 b
+        val r = opFn (av, bv)
     in
-      push stack (CF64 (opFn (asF64 a, asF64 b)))
+      traceF64Binop opName (av, bv, r);
+      push stack (CF64 r)
     end
 
   fun arithLL opFn stack =
@@ -169,23 +221,31 @@ structure Interpreter = struct
      resolve the overloading). Real comparators use Real.</Real.== etc. — IEEE
      semantics (NaN => false), never Real.compare which raises on unordered. *)
   type cmpRec =
-    { ii : int * int -> bool
+    { name : string
+    , ii : int * int -> bool
     , rr : real * real -> bool
     , ll : Int64.int * Int64.int -> bool
     }
 
-  fun cmp ({ii, rr, ll} : cmpRec) stack =
+  fun cmp ({name, ii, rr, ll} : cmpRec) stack =
     let val b = pop stack
         val a = pop stack
     in
       case (a, b) of
         (CInt x, CInt y) => push stack (CBool (ii (x, y)))
       | (CI64 x, CI64 y) => push stack (CBool (ll (x, y)))
-      | (CF64 x, CF64 y) => push stack (CBool (rr (x, y)))
+      | (CF64 x, CF64 y) =>
+          let val r = rr (x, y) in traceF64Cmp name (x, y, r); push stack (CBool r) end
       (* mixed width (VMF-008): one operand is a plain literal -- coerce to the
          wider/float type, as the C backend does. Float beats i64 beats int. *)
-      | (CF64 _, _) => push stack (CBool (rr (asF64 a, asF64 b)))
-      | (_, CF64 _) => push stack (CBool (rr (asF64 a, asF64 b)))
+      | (CF64 _, _) =>
+          let val (xv, yv) = (asF64 a, asF64 b)
+              val r = rr (xv, yv)
+          in traceF64Cmp name (xv, yv, r); push stack (CBool r) end
+      | (_, CF64 _) =>
+          let val (xv, yv) = (asF64 a, asF64 b)
+              val r = rr (xv, yv)
+          in traceF64Cmp name (xv, yv, r); push stack (CBool r) end
       | (CI64 _, _) => push stack (CBool (ll (asI64 a, asI64 b)))
       | (_, CI64 _) => push stack (CBool (ll (asI64 a, asI64 b)))
       | (CBool _, _) =>
@@ -196,19 +256,19 @@ structure Interpreter = struct
     end
 
   val cmpEQ : cmpRec =
-    {ii = fn (a, b) => a = b, rr = Real.==, ll = fn (a, b) => a = b}
+    {name = "EQ", ii = fn (a, b) => a = b, rr = Real.==, ll = fn (a, b) => a = b}
   val cmpNEQ : cmpRec =
-    {ii = fn (a, b) => a <> b, rr = fn (a, b) => not (Real.== (a, b)),
+    {name = "NEQ", ii = fn (a, b) => a <> b, rr = fn (a, b) => not (Real.== (a, b)),
      ll = fn (a, b) => a <> b}
   val cmpLT : cmpRec =
-    {ii = fn (a : int, b) => a < b, rr = Real.<, ll = fn (a : Int64.int, b) => a < b}
+    {name = "LT", ii = fn (a : int, b) => a < b, rr = Real.<, ll = fn (a : Int64.int, b) => a < b}
   val cmpGT : cmpRec =
-    {ii = fn (a : int, b) => a > b, rr = Real.>, ll = fn (a : Int64.int, b) => a > b}
+    {name = "GT", ii = fn (a : int, b) => a > b, rr = Real.>, ll = fn (a : Int64.int, b) => a > b}
   val cmpLTE : cmpRec =
-    {ii = fn (a : int, b) => a <= b, rr = Real.<=,
+    {name = "LTE", ii = fn (a : int, b) => a <= b, rr = Real.<=,
      ll = fn (a : Int64.int, b) => a <= b}
   val cmpGTE : cmpRec =
-    {ii = fn (a : int, b) => a >= b, rr = Real.>=,
+    {name = "GTE", ii = fn (a : int, b) => a >= b, rr = Real.>=,
      ll = fn (a : Int64.int, b) => a >= b}
 
   (* SS-U14: unsigned (u64 / usize) ordered comparison. The emitter selects
@@ -477,10 +537,10 @@ structure Interpreter = struct
                       true)
                 (* VMF-011: f64 ops are plain IEEE-754 (DIV_F64 has no zero check;
                    x /. 0.0 yields inf/nan per IEEE). *)
-                | B.ADD_F64 => (arithFF Real.+ stack; setTopIp nextIp; true)
-                | B.SUB_F64 => (arithFF Real.- stack; setTopIp nextIp; true)
-                | B.MUL_F64 => (arithFF Real.* stack; setTopIp nextIp; true)
-                | B.DIV_F64 => (arithFF Real./ stack; setTopIp nextIp; true)
+                | B.ADD_F64 => (arithFFTraced "ADD_F64" Real.+ stack; setTopIp nextIp; true)
+                | B.SUB_F64 => (arithFFTraced "SUB_F64" Real.- stack; setTopIp nextIp; true)
+                | B.MUL_F64 => (arithFFTraced "MUL_F64" Real.* stack; setTopIp nextIp; true)
+                | B.DIV_F64 => (arithFFTraced "DIV_F64" Real./ stack; setTopIp nextIp; true)
                 | B.NEG_F64 =>
                     ( case pop stack of
                         CF64 x => push stack (CF64 (Real.~ x))
