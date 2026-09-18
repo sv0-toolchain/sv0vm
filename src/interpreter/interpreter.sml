@@ -870,6 +870,23 @@ structure Interpreter = struct
                              push stack (CInt vh); setTopIp nextIp; true
                           end
                       | _ => raise Fail "interpreter: string_byte_view expects a string index")
+                    (* SS-U11: fill_explicit(dst: &mut [byte], value: byte) -> ()
+                       -- a dedicated CALL_BUILTIN id, distinct from the general
+                       idx_set loop a plain `fill` compiles to, exactly so a
+                       future VM optimization pass has an unambiguous marker to
+                       respect (sv0doc memory-model/ownership.md §6.5, BYTE-010).
+                       This interpreter has no store-elimination pass today, so
+                       the loop body is identical to repeated idxSet -- the
+                       guarantee is that THIS id's semantics may never become
+                       "maybe elided". *)
+                    else if bid = 37 then
+                      let val v = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                          val n = viewLen h
+                          fun fillLoop i =
+                            if i >= n then ()
+                            else (idxSet (h, i, v); fillLoop (i + 1))
+                      in fillLoop 0; setTopIp nextIp; true end
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
