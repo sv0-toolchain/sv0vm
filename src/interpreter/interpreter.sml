@@ -930,6 +930,17 @@ structure Interpreter = struct
                           val i = idxInt (pop stack)
                           val h = idxInt (pop stack)
                       in realSet (idxGet (h, i)) x; setTopIp nextIp; true end
+                    (* f64 forms of the e[i] / e[i] = v sugar: 41 get, 42 set. *)
+                    else if bid = 41 then
+                      let val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in push stack (CF64 (realGet (idxGet (h, i))));
+                         setTopIp nextIp; true end
+                    else if bid = 42 then
+                      let val x = asF64 (pop stack)
+                          val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in realSet (idxGet (h, i)) x; setTopIp nextIp; true end
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>

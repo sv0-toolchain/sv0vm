@@ -411,6 +411,27 @@ in
     vf ([LOAD_LOCAL 0, p 7, CALL_BUILTIN 38] @
         sel [LOAD_LOCAL 0, p 0, CALL_BUILTIN 39, pf 7.0, EQ] 1 0), 1)
 
+  (* f64 forms of the e[i] / e[i] = v sugar (builtins 41 get / 42 set): on a
+     plain vec handle and through a slice view (slice_from_vec = builtin 30) *)
+  fun vf2 (body : insn list) : int =
+    runL 2 ([CALL_BUILTIN 7, STORE_LOCAL 0] @ body)
+  val () = expect ("idxf64-get",
+    vf (pushF 1.5 @ pushF 2.25 @
+        sel [LOAD_LOCAL 0, p 1, CALL_BUILTIN 41, pf 2.25, EQ] 1 0), 1)
+  val () = expect ("idxf64-set",
+    vf (pushF 1.5 @ pushF 2.5 @
+        [LOAD_LOCAL 0, p 0, pf 9.5, CALL_BUILTIN 42] @
+        sel [LOAD_LOCAL 0, p 0, CALL_BUILTIN 39, pf 9.5, EQ] 1 0), 1)
+  val () = expect ("idxf64-slice-get",
+    vf2 (pushF 1.5 @ pushF 2.5 @ pushF 3.5 @
+         [LOAD_LOCAL 0, p 1, p 3, CALL_BUILTIN 30, STORE_LOCAL 1] @
+         sel [LOAD_LOCAL 1, p 0, CALL_BUILTIN 41, pf 2.5, EQ] 1 0), 1)
+  val () = expect ("idxf64-slice-set-reaches-vec",
+    vf2 (pushF 1.5 @ pushF 2.5 @ pushF 3.5 @
+         [LOAD_LOCAL 0, p 1, p 3, CALL_BUILTIN 30, STORE_LOCAL 1,
+          LOAD_LOCAL 1, p 0, pf 7.5, CALL_BUILTIN 42] @
+         sel [LOAD_LOCAL 0, p 1, CALL_BUILTIN 39, pf 7.5, EQ] 1 0), 1)
+
   val () =
     if !nfail = 0 then print "interpreter exec tests: OK\n"
     else raise Fail ("interpreter exec tests: " ^ Int.toString (!nfail) ^ " failure(s)")
