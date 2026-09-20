@@ -378,6 +378,26 @@ structure Interpreter = struct
         in dynVecs := !dynVecs @ [ref []]; dynVecCount := !dynVecCount + 1; idx end
       fun vecRef h = List.nth (!dynVecs, h)
 
+      (* f64 vec elements (builtins 38-40). A vec element is an SML int, which
+         cannot hold 64 bits, so an f64 element is an index into this growable
+         real pool: push allocates a fresh slot, set overwrites the element's
+         own slot in place (an f64 element owns its slot exclusively), get
+         reads it. The vec's length, slices and handle table are the ordinary
+         ones. Values are IEEE doubles, so NaN and -0.0 survive exactly. *)
+      val realPool : real Array.array ref = ref (Array.array (1024, 0.0))
+      val realNext = ref 0
+      fun realAlloc (r : real) : int =
+        let val n = !realNext
+            val () =
+              if n >= Array.length (!realPool)
+              then let val old = !realPool
+                       val nw = Array.array (2 * Array.length old, 0.0)
+                   in Array.copy {src = old, dst = nw, di = 0}; realPool := nw end
+              else ()
+        in Array.update (!realPool, n, r); realNext := n + 1; n end
+      fun realGet (i : int) : real = Array.sub (!realPool, i)
+      fun realSet (i : int) (r : real) : unit = Array.update (!realPool, i, r)
+
       val boxPool : int Array.array = Array.array (65536, 0)
       val boxNext = ref 0
       fun boxAlloc nwords =
@@ -895,6 +915,21 @@ structure Interpreter = struct
                             if i >= n then ()
                             else (idxSet (h, i, v); fillLoop (i + 1))
                       in fillLoop 0; setTopIp nextIp; true end
+                    (* f64-element vec access: 38 push, 39 get, 40 set. *)
+                    else if bid = 38 then
+                      let val x = asF64 (pop stack)
+                          val h = idxInt (pop stack)
+                      in vecPush h (realAlloc x); setTopIp nextIp; true end
+                    else if bid = 39 then
+                      let val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in push stack (CF64 (realGet (idxGet (h, i))));
+                         setTopIp nextIp; true end
+                    else if bid = 40 then
+                      let val x = asF64 (pop stack)
+                          val i = idxInt (pop stack)
+                          val h = idxInt (pop stack)
+                      in realSet (idxGet (h, i)) x; setTopIp nextIp; true end
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
                 | B.CONTRACT_CHECK midx =>
