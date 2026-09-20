@@ -15,6 +15,9 @@ fun sameInsn (a : Bytecode.insn, b : Bytecode.insn) : bool =
   | (Bytecode.PUSH_STRING x, Bytecode.PUSH_STRING y) => x = y
   | (Bytecode.ADD_I32, Bytecode.ADD_I32) => true
   | (Bytecode.ADD_F64, Bytecode.ADD_F64) => true
+  | (Bytecode.AND_I64, Bytecode.AND_I64) => true
+  | (Bytecode.OR_I64, Bytecode.OR_I64) => true
+  | (Bytecode.XOR_I64, Bytecode.XOR_I64) => true
   | (Bytecode.LOAD_LOCAL x, Bytecode.LOAD_LOCAL y) => x = y
   | (Bytecode.STORE_LOCAL x, Bytecode.STORE_LOCAL y) => x = y
   | (Bytecode.CALL (f, n), Bytecode.CALL (g, m)) => f = g andalso n = m
@@ -57,6 +60,21 @@ val prog : Bytecode.program =
         }
       ]
   }
+
+(* wide bitwise opcodes are single bytes 43/44/45 and round-trip *)
+val () =
+  let
+    fun one (i : Bytecode.insn, b : int) =
+      let val e = Bytecode.encodeInsn i
+      in
+        if Word8Vector.length e = 1 andalso Word8.toInt (Word8Vector.sub (e, 0)) = b
+           andalso sameInsn (i, #1 (Bytecode.decodeInsnVec e 0))
+        then ()
+        else raise Fail ("wide bitwise opcode " ^ Int.toString b)
+      end
+  in
+    one (Bytecode.AND_I64, 43); one (Bytecode.OR_I64, 44); one (Bytecode.XOR_I64, 45)
+  end
 
 val fileVec = Bytecode.encodeFile prog
 val prog2 = Bytecode.decodeFile fileVec
@@ -354,6 +372,18 @@ in
     run (sel [pl 5000000000, NEG_I64, pl 0, LT] 1 0), 1)
   val () = expect ("i64-gt-wide",
     run (sel [pl 5000000000, pl 3000000000, GT] 1 0), 1)
+  (* wide bitwise: BIT_AND/OR/XOR narrow to 32 bits, these keep all 64 *)
+  val () = expect ("i64-and-wide",
+    run (sel [pl 1099511627781, pl 1099511627779, AND_I64, pl 1099511627777, EQ] 1 0), 1)
+  val () = expect ("i64-or-wide",
+    run (sel [pl 1099511627776, pl 5, OR_I64, pl 1099511627781, EQ] 1 0), 1)
+  val () = expect ("i64-xor-wide",
+    run (sel [pl 1099511627781, pl 1099511627779, XOR_I64, pl 6, EQ] 1 0), 1)
+  (* sign bits: -2 & 3 = 2, and a CInt operand is sign-extended like the other wide ops *)
+  val () = expect ("i64-and-neg",
+    run (sel [pl (~2), p 3, AND_I64, pl 2, EQ] 1 0), 1)
+  val () = expect ("i64-xor-allones",
+    run (sel [pl (~1), pl 1, XOR_I64, pl (~2), EQ] 1 0), 1)
 
   val () =
     if !nfail = 0 then print "interpreter exec tests: OK\n"

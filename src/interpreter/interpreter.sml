@@ -628,6 +628,14 @@ structure Interpreter = struct
                         unw64 (Word64.>> (w64 a, Word.fromInt (Int64.toInt b mod 64)))) stack;
                       setTopIp nextIp;
                       true)
+                (* Wide (64-bit) bitwise. The polymorphic BIT_AND/OR/XOR narrow to
+                   32 bits, so an i64/u64 value past bit 31 lost its high half. *)
+                | B.AND_I64 =>
+                    (arithLL (fn (a, b) => unw64 (Word64.andb (w64 a, w64 b))) stack; setTopIp nextIp; true)
+                | B.OR_I64 =>
+                    (arithLL (fn (a, b) => unw64 (Word64.orb (w64 a, w64 b))) stack; setTopIp nextIp; true)
+                | B.XOR_I64 =>
+                    (arithLL (fn (a, b) => unw64 (Word64.xorb (w64 a, w64 b))) stack; setTopIp nextIp; true)
                 | B.LOAD_LOCAL s =>
                     (push stack (Array.sub (loc, s)); setTopIp nextIp; true)
                 | B.STORE_LOCAL s =>

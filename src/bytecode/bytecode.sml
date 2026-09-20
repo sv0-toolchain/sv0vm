@@ -185,6 +185,7 @@ structure Bytecode = struct
     | ADD_I64 | SUB_I64 | MUL_I64 | DIV_I64 | MOD_I64 | NEG_I64
     | DIV_U64 | MOD_U64                       (* SS-U14: unsigned wide div/rem *)
     | SHL_I64 | SHR_I64 | SHR_U64             (* SS-U14 residual #1: wide shifts *)
+    | AND_I64 | OR_I64 | XOR_I64              (* wide (64-bit) bitwise; BIT_AND/OR/XOR are 32-bit *)
     | ADD_F64 | SUB_F64 | MUL_F64 | DIV_F64 | NEG_F64
     | EQ | NEQ | LT | GT | LTE | GTE
     | LT_U64 | GT_U64 | LTE_U64 | GTE_U64     (* SS-U14: unsigned ordered compare *)
@@ -240,6 +241,9 @@ structure Bytecode = struct
     | SHL_I64 => bytes1 (w8 40)
     | SHR_I64 => bytes1 (w8 41)
     | SHR_U64 => bytes1 (w8 42)
+    | AND_I64 => bytes1 (w8 43)
+    | OR_I64 => bytes1 (w8 44)
+    | XOR_I64 => bytes1 (w8 45)
     | ADD_F64 => bytes1 (w8 48)
     | SUB_F64 => bytes1 (w8 49)
     | MUL_F64 => bytes1 (w8 50)
@@ -325,6 +329,9 @@ structure Bytecode = struct
       | 40 => (SHL_I64, i + 1)
       | 41 => (SHR_I64, i + 1)
       | 42 => (SHR_U64, i + 1)
+      | 43 => (AND_I64, i + 1)
+      | 44 => (OR_I64, i + 1)
+      | 45 => (XOR_I64, i + 1)
       | 48 => (ADD_F64, i + 1)
       | 49 => (SUB_F64, i + 1)
       | 50 => (MUL_F64, i + 1)
