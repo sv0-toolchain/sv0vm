@@ -10,6 +10,18 @@ sv0vm executes sv0 bytecode produced by sv0c's VM backend. it provides fast iter
 
 - **Bytecode:** [sv0doc/bytecode/format.md](../sv0doc/bytecode/format.md), [sv0doc/bytecode/instructions.md](../sv0doc/bytecode/instructions.md) (submodule path when using the combined workspace: same relative layout from repo root).
 
+## planned expansion
+
+`~/Documents/project-specs/sv0vm-implementation-expand/SPEC.md` (`0.1.35`)
+plans a normative `.sv0b` contract in sv0doc, shared registries and
+conformance corpora under `spec/` and `conformance/`, and six independent
+conforming VMs under `implementations/` (sv0, Go, Haskell, Python, C99,
+TypeScript). This SML/NJ interpreter becomes a restricted positive-only
+reference and leaves active CI after that plan's R0.6. The installed-toolchain
+spec also needs a standalone native `sv0vm` for its first binary release.
+Planning lives in the parent repo: `task/sv0vm-multi-implementation.Rmd`
+(`VMX-###`).
+
 ## architecture
 
 ```
