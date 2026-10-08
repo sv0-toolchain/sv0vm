@@ -200,6 +200,78 @@ in
                              andalso !Coverage.bound = SOME 3)
   val () = Coverage.reset ()
 
+  (* 8. CRC32C (SPEC 16.4 check value) and raw profile byte parity with the
+     sv0cov CV-024 goldens (copied to test/fixtures/rawprofile; the root
+     test checks the copies match sv0cov's). *)
+  val () = expect ("crc32c-check", RawProfile.crc32c (Byte.stringToBytes "123456789") = 0wxe3069283)
+  val () = expect ("crc32c-empty", RawProfile.crc32c (Word8Vector.fromList []) = 0w0)
+  fun readBytes (path : string) = let val i = BinIO.openIn path in BinIO.inputAll i before BinIO.closeIn i end
+  fun rep (b : int) (n : int) = Word8Vector.tabulate (n, fn _ => Word8.fromInt b)
+  val runFix = valOf (Coverage.hexBytes "0102030405060708090a0b0c0d0e0f10")
+  val profFix = valOf (Coverage.hexBytes "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
+  val goldens : (string * Word32.word * int * string option * (int * Word64.word) list * int) list =
+    [ ("native-basic", 0wx04, 0x10, NONE, [(0, 0w1), (2, 0w7)], 4)
+    , ("vm-v1-empty-context", 0wx08, 0x11, SOME "", [(1, 0w1)], 3)
+    , ("vm-v2-context-saturated", 0wx10, 0x12, SOME "ctx/\195\169", [(0, 0w5), (64, RawProfile.maxCount)], 65)
+    , ("native-zero-counter", 0wx04, 0x13, NONE, [], 0)
+    , ("native-no-hits", 0wx04, 0x14, NONE, [], 3) ]
+  val () =
+    app (fn (name, flag, mapByte, ctx, counts, n) =>
+      let
+        val got = RawProfile.encode {flags = flag, mapId = rep mapByte 32, runId = runFix, profileId = profFix,
+                                     context = ctx, counts = counts, n = n}
+        val want = readBytes ("test/fixtures/rawprofile/" ^ name ^ ".sv0profraw")
+      in
+        expect ("golden-" ^ name, got = want)
+      end) goldens
+
+  (* 9. flush: publishes exactly those bytes, mode 0600, under
+     <run>-<profile>.sv0profraw; a name that exists is COV2112 and is kept. *)
+  fun freshDir () =
+    let val d = OS.FileSys.tmpName () in (OS.FileSys.remove d handle OS.SysErr _ => ()); OS.FileSys.mkDir d; d end
+  fun prepare (dir : string) =
+    ( Coverage.reset ()
+    ; Coverage.activate 3
+    ; Coverage.hit 1
+    ; Coverage.profileDir := dir
+    ; Coverage.runId := runFix
+    ; Coverage.profileId := profFix
+    ; Coverage.mapIdBytes := rep 0x11 32
+    ; Coverage.context := SOME ""
+    ; Coverage.publish := true )
+  val dir = freshDir ()
+  val () = prepare dir
+  val () = expect ("flush-ok", Coverage.flush () = NONE)
+  val name = "0102030405060708090a0b0c0d0e0f10-a0a1a2a3a4a5a6a7a8a9aaabacadaeaf.sv0profraw"
+  val path = dir ^ "/" ^ name
+  val () = expect ("flush-golden-bytes", (readBytes path = readBytes "test/fixtures/rawprofile/vm-v1-empty-context.sv0profraw")
+                                         handle IO.Io _ => false)
+  val () = expect ("flush-mode-0600",
+    (Posix.FileSys.ST.mode (Posix.FileSys.stat path) = Posix.FileSys.S.flags [Posix.FileSys.S.irusr, Posix.FileSys.S.iwusr])
+    handle OS.SysErr _ => false)
+  val () = expect ("flush-once", Coverage.flush () = NONE)
+  (* Collision: the same IDs again; the existing file is left alone. *)
+  val () = prepare dir
+  val () = Coverage.hit 0
+  val () = Coverage.required := true
+  val () = expect ("flush-collision-required", Coverage.flush () = SOME 1)
+  val () = expect ("collision-kept", (readBytes path = readBytes "test/fixtures/rawprofile/vm-v1-empty-context.sv0profraw")
+                                     handle IO.Io _ => false)
+  val () = expect ("no-temporaries-left", (let val d = OS.FileSys.openDir dir
+                                               fun all acc = case OS.FileSys.readDir d of NONE => acc | SOME f => all (f :: acc)
+                                           in all [] before OS.FileSys.closeDir d end) = [name])
+  (* A vanished directory: COV2010, status 1 only when required. *)
+  val gone = freshDir ()
+  val () = OS.FileSys.rmDir gone
+  val () = prepare gone
+  val () = expect ("flush-missing-dir-not-required", Coverage.flush () = NONE)
+  val () = prepare gone
+  val () = Coverage.required := true
+  val () = expect ("flush-missing-dir-required", Coverage.flush () = SOME 1)
+  val () = OS.FileSys.remove path
+  val () = OS.FileSys.rmDir dir
+  val () = Coverage.reset ()
+
   val () =
     if !nfail = 0 then print "coverage tests: OK\n"
     else raise Fail ("coverage tests: " ^ Int.toString (!nfail) ^ " failure(s)")

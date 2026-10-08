@@ -1019,8 +1019,12 @@ structure Interpreter = struct
       val () = Coverage.load (p, v, text)
       val ld = loadProgram p
       val st = ref ([] : cell list)
+      (* Normal return and contract failure both end here with an exit
+         code; then the raw profile is published (CV-121). A crash raises
+         past this point and publishes nothing. *)
+      val code = runWithStack ld (findMain ld) st
     in
-      runWithStack ld (findMain ld) st
+      case Coverage.flush () of SOME failed => failed | NONE => code
     end
 
   fun runProgram (p : B.program) : int =
