@@ -103,6 +103,103 @@ in
                                 andalso Array.sub (!Coverage.overflow, 0))
   val () = Coverage.reset ()
 
+  (* 5. SHA-256 (FIPS 180-4 vectors). *)
+  fun sha (s : string) = Sha256.hexOf (Byte.stringToBytes s)
+  val () = expect ("sha-empty", sha "" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  val () = expect ("sha-abc", sha "abc" = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  val () = expect ("sha-two-blocks",
+    sha "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+    = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+  (* Padding boundaries: 55 bytes fits one block, 56 needs two. *)
+  val () = expect ("sha-55-bytes", sha (CharVector.tabulate (55, fn _ => #"x")) = "d5e285683cd4efc02d021a5c62014694958901005d6f71e89e0989fac77e4072")
+  val () = expect ("sha-56-bytes", sha (CharVector.tabulate (56, fn _ => #"x")) = "04c26261370ee7541549d16dee320c723e3fd14671e66a099afe0a377c16888e")
+  val () = expect ("sha-63-bytes", sha (CharVector.tabulate (63, fn _ => #"x")) = "75220b47218278e656f2013bb8f0c455a25eaf01e86c64924e9d48d89776d6f2")
+  val () = expect ("sha-64-bytes", sha (CharVector.tabulate (64, fn _ => #"x")) = "7ce100971f64e7001e8fe5a51973ecdfe1ced42befe7ee8d5fd6219506b5393c")
+  val () = expect ("sha-65-bytes", sha (CharVector.tabulate (65, fn _ => #"x")) = "9537c5fdf120482f7d58d25e9ed583f52c02b4e304ea814db1633ad565aed7e9")
+
+  (* 6. The companion binding: sv0cov's own golden (tests/test_vmbinding.py)
+     reads back; every non-canonical variant is COV2201. *)
+  val bc = Word8Vector.concat [Byte.stringToBytes "SV0B\001\000", Word8Vector.tabulate (40, fn i => Word8.fromInt i)]
+  val ident = "sv0c@" ^ "0123456789abcdef0123456789abcdef012"
+  val golden =
+    "{\"bytecode_length\":46,\"bytecode_sha256\":\"" ^ Sha256.hexOf bc ^ "\","
+    ^ "\"capabilities\":[\"sv0cov.coverage.v1\"],\"compiler_identity\":\"" ^ ident ^ "\","
+    ^ "\"map_id\":\"" ^ CharVector.tabulate (64, fn i => if i mod 2 = 0 then #"a" else #"b")
+    ^ "\",\"plan_capability\":\"sv0cov.plan.v1\",\"profile\":\"sv0vm-v1-coverage\","
+    ^ "\"program_counter_count\":3,\"raw_profile_version\":\"1.0\",\"schema\":\"sv0cov.vm-binding\",\"version\":\"1.0\"}\n"
+  val () =
+    let val b = Coverage.readBinding golden
+    in
+      expect ("binding-golden", #programCounterCount b = 3 andalso #compilerIdentity b = ident
+                                andalso #bytecodeLength b = 46);
+      expect ("binding-binds", rejects (fn () => Coverage.bindTo (b, bc)) = NONE);
+      expect ("binding-other-bytes",
+        rejects (fn () => Coverage.bindTo (b, Word8Vector.update (bc, 45, 0w99))) = SOME "COV2202");
+      expect ("binding-other-length",
+        rejects (fn () => Coverage.bindTo (b, Word8Vector.concat [bc, Word8Vector.fromList [0w0]])) = SOME "COV2202")
+    end
+    handle Coverage.Reject (_, d) => fail "binding-golden" d
+  fun replace (s : string, a : string, b : string) : string =
+      let
+        val n = size a
+        fun go i = if i + n > size s then NONE
+                   else if String.substring (s, i, n) = a then SOME i else go (i + 1)
+      in
+        case go 0 of
+          NONE => raise Fail ("replace: " ^ a ^ " not found")
+        | SOME i => String.substring (s, 0, i) ^ b ^ String.extract (s, i + n, NONE)
+      end
+  val variants =
+    [ ("no-final-lf", String.substring (golden, 0, size golden - 1))
+    , ("crlf", String.substring (golden, 0, size golden - 1) ^ "\r\n")
+    , ("trailing", golden ^ " ")
+    , ("space", replace (golden, "\"version\":", "\"version\": "))
+    , ("reordered", replace (golden, "{\"bytecode_length\":46,\"bytecode_sha256\":", "{\"bytecode_sha256\":"))
+    , ("extra-key", replace (golden, "\"version\":\"1.0\"}", "\"version\":\"1.0\",\"x\":1}"))
+    , ("profile", replace (golden, "sv0vm-v1-coverage", "sv0vm-v1-core"))
+    , ("schema", replace (golden, "\"sv0cov.vm-binding\"", "\"sv0cov.vm-binding-semantic\""))
+    , ("capability", replace (golden, "sv0cov.coverage.v1", "sv0cov.coverage.v2"))
+    , ("raw-version", replace (golden, "\"raw_profile_version\":\"1.0\"", "\"raw_profile_version\":\"1.1\""))
+    , ("uppercase-map", replace (golden, "abababab", "ABABABAB"))
+    , ("short-sha", replace (golden, "\"bytecode_sha256\":\"", "\"bytecode_sha256\":\"0"))
+    , ("leading-zero", replace (golden, "\"program_counter_count\":3", "\"program_counter_count\":03"))
+    , ("negative", replace (golden, "\"program_counter_count\":3", "\"program_counter_count\":-3"))
+    , ("count-over-u32", replace (golden, "\"program_counter_count\":3", "\"program_counter_count\":4294967296"))
+    , ("zero-length", replace (golden, "\"bytecode_length\":46", "\"bytecode_length\":0"))
+    , ("identity-space", replace (golden, ident, "sv0c test"))
+    , ("identity-empty", replace (golden, ident, ""))
+    , ("identity-129", replace (golden, ident, CharVector.tabulate (129, fn _ => #"x")))
+    , ("identity-unicode-escape", replace (golden, ident, "sv0c\\u0041"))
+    , ("too-large", golden ^ CharVector.tabulate (4096, fn _ => #" "))
+    , ("not-json", "")
+    ]
+  val () =
+    app (fn (name, text) =>
+      expect ("binding-" ^ name, rejects (fn () => ignore (Coverage.readBinding text)) = SOME "COV2201"))
+      variants
+  (* Escaped quote and backslash are valid identity bytes. *)
+  val () = expect ("identity-escapes",
+    (#compilerIdentity (Coverage.readBinding (replace (golden, ident, "a\\\"b\\\\c"))) = "a\"b\\c")
+    handle Coverage.Reject _ => false)
+  val () = expect ("count-u32-max",
+    (#programCounterCount (Coverage.readBinding
+       (replace (golden, "\"program_counter_count\":3", "\"program_counter_count\":4294967295"))) = 4294967295)
+    handle Coverage.Reject _ => false)
+
+  (* 7. load: binding, then bytes, then operands; nothing runs on failure. *)
+  val () = Coverage.reset ()
+  val () = expect ("load-unbound-instrumented",
+    rejects (fn () => Coverage.load (hit2, bc, NONE)) = SOME "COV2201")
+  val () = expect ("load-unbound-plain", rejects (fn () => Coverage.load (none, bc, NONE)) = NONE)
+  val () = expect ("load-wrong-bytes",
+    rejects (fn () => Coverage.load (hit2, Word8Vector.update (bc, 7, 0w7), SOME golden)) = SOME "COV2202")
+  val () = expect ("load-count-mismatch",
+    rejects (fn () => Coverage.load (hit2, bc, SOME (replace (golden, "\"program_counter_count\":3",
+                                                              "\"program_counter_count\":1")))) = SOME "COV2201")
+  val () = expect ("load-ok", rejects (fn () => Coverage.load (prog [COVER_HIT 2, RETURN], bc, SOME golden)) = NONE
+                             andalso !Coverage.bound = SOME 3)
+  val () = Coverage.reset ()
+
   val () =
     if !nfail = 0 then print "coverage tests: OK\n"
     else raise Fail ("coverage tests: " ^ Int.toString (!nfail) ^ " failure(s)")

@@ -997,6 +997,32 @@ structure Interpreter = struct
       runWithStack ld (findMain ld) st
     end
 
+  (* sv0cov CV-120: run a .sv0b with an explicitly named coverage binding
+     (or none). The binding is read, validated and bound to the exact file
+     bytes first -- so changed bytecode is reported as a binding mismatch
+     (COV2202) before any of it is parsed -- then the program is decoded and
+     its COVER_HIT operands checked, all before any instruction runs; a
+     failure raises Coverage.Reject. *)
+  fun runFileBound (path : string, binding : string option) : int =
+    let
+      val ins = BinIO.openIn path
+      val v = BinIO.inputAll ins
+      val () = BinIO.closeIn ins
+      val text =
+        case binding of
+          NONE => NONE
+        | SOME b =>
+            (SOME (let val i = TextIO.openIn b in TextIO.inputAll i before TextIO.closeIn i end)
+             handle IO.Io _ => raise Coverage.Reject ("COV2201", "cannot read the coverage binding " ^ b))
+      val () = case text of SOME t => Coverage.bindTo (Coverage.readBinding t, v) | NONE => ()
+      val p = B.decodeFile v
+      val () = Coverage.load (p, v, text)
+      val ld = loadProgram p
+      val st = ref ([] : cell list)
+    in
+      runWithStack ld (findMain ld) st
+    end
+
   fun runProgram (p : B.program) : int =
     let val ld = loadProgram p
         val mi = findMain ld

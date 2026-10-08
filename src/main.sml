@@ -1,6 +1,7 @@
 (* sv0vm: load modules for interactive development. *)
 
 use "src/bytecode/bytecode.sml";
+use "src/coverage/sha256.sml";
 use "src/coverage/coverage.sml";
 use "src/runtime/runtime.sml";
 use "src/interpreter/interpreter.sml";
