@@ -87,8 +87,12 @@ structure Interpreter = struct
     , funcs : func_rec vector
     }
 
+  (* sv0cov CV-119: the COVER_HIT checks run here, before any instruction
+     executes; a bound program gets a fresh counter arena. *)
   fun loadProgram (p : B.program) : loaded =
     let
+      val () = Coverage.check (p, !Coverage.bound)
+      val () = case !Coverage.bound of SOME n => Coverage.activate n | NONE => ()
       val ss = Vector.fromList (#strings p)
       val fs =
         Vector.fromList
@@ -943,6 +947,9 @@ structure Interpreter = struct
                       in realSet (idxGet (h, i)) x; setTopIp nextIp; true end
                     else
                       raise Fail ("interpreter: unknown builtin " ^ Int.toString bid)
+                | B.COVER_HIT k =>
+                    (* stack-neutral: one counter, nothing else *)
+                    (Coverage.hit k; setTopIp nextIp; true)
                 | B.CONTRACT_CHECK midx =>
                     let val ok = truthy (pop stack)
                         val msg = Vector.sub (strings, midx)

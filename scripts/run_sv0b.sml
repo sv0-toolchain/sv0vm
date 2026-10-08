@@ -11,6 +11,11 @@ val path =
       );
 
 val () = print "SV0VM_RUN_BEGIN\n";
-val exitCode = Interpreter.runFile path;
+(* sv0cov CV-119: a coverage rejection happens at load, before any
+   instruction runs; report it with its registry code and fail. *)
+val exitCode = Interpreter.runFile path
+  handle Coverage.Reject (code, detail) =>
+    ( TextIO.output (TextIO.stdErr, "sv0vm: error[" ^ code ^ "]: " ^ detail ^ "\n")
+    ; OS.Process.exit OS.Process.failure );
 val () = print ("vm_exit:" ^ Int.toString exitCode ^ "\n");
 OS.Process.exit (if exitCode = 0 then OS.Process.success else OS.Process.failure);

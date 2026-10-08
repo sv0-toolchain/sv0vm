@@ -199,6 +199,7 @@ structure Bytecode = struct
     | CALL of int * int
     | RETURN
     | RETURN_SLOTS of int (* u8: pop n cells as return values (0 = void); replaces plain RETURN when n<>1 *)
+    | COVER_HIT of int (* sv0cov CV-119: u32le local counter index; 5 bytes, stack-neutral (sv0doc bytecode/coverage.md) *)
     | CALL_BUILTIN of int
     | ALLOC_STRUCT of int
     | GET_FIELD of int
@@ -280,6 +281,9 @@ structure Bytecode = struct
         if n < 0 orelse n > 255 then raise Fail "RETURN_SLOTS count out of range"
         else cat [bytes1 (w8 118), bytes1 (w8 n)]
     | CALL_BUILTIN id => cat [bytes1 (w8 117), u32Le id]
+    | COVER_HIT k =>
+        if k < 0 orelse k > 4294967295 then raise Fail "COVER_HIT counter index out of u32 range"
+        else cat [bytes1 (w8 119), u32Le k]
     | ALLOC_STRUCT t => cat [bytes1 (w8 128), u32Le t]
     | GET_FIELD f => cat [bytes1 (w8 129), u32Le f]
     | SET_FIELD f => cat [bytes1 (w8 130), u32Le f]
@@ -379,6 +383,9 @@ structure Bytecode = struct
       | 118 =>
           let val n = Word8.toInt (Word8Vector.sub (v, i + 1))
           in (RETURN_SLOTS n, i + 2) end
+      | 119 =>
+          (* unsigned: a counter index is u32, never negative *)
+          (COVER_HIT (Int.fromLarge (Word32.toLargeInt (u32ToWord32 v (i + 1)))), i + 5)
       | 128 =>
           let val (t, j) = u32At v (i + 1) in (ALLOC_STRUCT t, j) end
       | 129 =>
@@ -550,5 +557,133 @@ structure Bytecode = struct
     in
       {strings = strings, funcs = funcs}
     end
+
+  (* ── disassembly (sv0cov CV-119) ───────────────────────────────────────
+     Text listing of a .sv0b byte vector, in the same format as sv0c's
+     bytecode.sv0 disasm_file so the two can be compared byte for byte:
+
+       sv0b v1: <functions> functions, <string section bytes> string bytes
+       fn <index> (name #<string index>, arity <a>, locals <l>, <n> bytes):
+         <offset>  <MNEMONIC> <operands>
+
+     Offsets are decimal, right-aligned in 5 columns, relative to the
+     function's code. Jumps add "-> <target>"; PUSH_I64 / PUSH_F64 print their
+     8 bytes as 0x-hex (most significant first); u32 operands are unsigned;
+     COVER_HIT prints its counter index (sv0doc bytecode/coverage.md 1.2). An
+     opcode this table does not know ends the function's listing with
+     "?? <opcode>". Works on raw bytes, so it can list what decode rejects. *)
+
+  datatype operands = NoOps | I32Op | I64Bytes | BoolOp | U8Op | U32Ops of int | JumpOp | CastOps
+
+  fun opInfo (opc : int) : (string * operands) option =
+    case opc of
+      0 => SOME ("HALT", NoOps) | 1 => SOME ("POP", NoOps) | 2 => SOME ("DUP", NoOps)
+    | 3 => SOME ("PUSH_UNIT", NoOps) | 4 => SOME ("PUSH_I32", I32Op)
+    | 5 => SOME ("PUSH_I64", I64Bytes) | 6 => SOME ("PUSH_F64", I64Bytes)
+    | 7 => SOME ("PUSH_BOOL", BoolOp) | 8 => SOME ("PUSH_STRING", U32Ops 1)
+    | 16 => SOME ("ADD_I32", NoOps) | 17 => SOME ("SUB_I32", NoOps) | 18 => SOME ("MUL_I32", NoOps)
+    | 19 => SOME ("DIV_I32", NoOps) | 20 => SOME ("MOD_I32", NoOps) | 21 => SOME ("NEG_I32", NoOps)
+    | 32 => SOME ("ADD_I64", NoOps) | 33 => SOME ("SUB_I64", NoOps) | 34 => SOME ("MUL_I64", NoOps)
+    | 35 => SOME ("DIV_I64", NoOps) | 36 => SOME ("MOD_I64", NoOps) | 37 => SOME ("NEG_I64", NoOps)
+    | 38 => SOME ("DIV_U64", NoOps) | 39 => SOME ("MOD_U64", NoOps) | 40 => SOME ("SHL_I64", NoOps)
+    | 41 => SOME ("SHR_I64", NoOps) | 42 => SOME ("SHR_U64", NoOps) | 43 => SOME ("AND_I64", NoOps)
+    | 44 => SOME ("OR_I64", NoOps) | 45 => SOME ("XOR_I64", NoOps)
+    | 48 => SOME ("ADD_F64", NoOps) | 49 => SOME ("SUB_F64", NoOps) | 50 => SOME ("MUL_F64", NoOps)
+    | 51 => SOME ("DIV_F64", NoOps) | 52 => SOME ("NEG_F64", NoOps)
+    | 64 => SOME ("EQ", NoOps) | 65 => SOME ("NEQ", NoOps) | 66 => SOME ("LT", NoOps)
+    | 67 => SOME ("GT", NoOps) | 68 => SOME ("LTE", NoOps) | 69 => SOME ("GTE", NoOps)
+    | 70 => SOME ("LT_U64", NoOps) | 71 => SOME ("GT_U64", NoOps) | 72 => SOME ("LTE_U64", NoOps)
+    | 73 => SOME ("GTE_U64", NoOps)
+    | 80 => SOME ("AND", NoOps) | 81 => SOME ("OR", NoOps) | 82 => SOME ("NOT", NoOps)
+    | 88 => SOME ("BIT_AND", NoOps) | 89 => SOME ("BIT_OR", NoOps) | 90 => SOME ("BIT_XOR", NoOps)
+    | 91 => SOME ("BIT_NOT", NoOps) | 92 => SOME ("SHL", NoOps) | 93 => SOME ("SHR", NoOps)
+    | 96 => SOME ("LOAD_LOCAL", U32Ops 1) | 97 => SOME ("STORE_LOCAL", U32Ops 1)
+    | 112 => SOME ("JUMP", JumpOp) | 113 => SOME ("JUMP_IF", JumpOp) | 114 => SOME ("JUMP_IF_NOT", JumpOp)
+    | 115 => SOME ("CALL", U32Ops 2) | 116 => SOME ("RETURN", NoOps)
+    | 117 => SOME ("CALL_BUILTIN", U32Ops 1) | 118 => SOME ("RETURN_SLOTS", U8Op)
+    | 119 => SOME ("COVER_HIT", U32Ops 1)
+    | 128 => SOME ("ALLOC_STRUCT", U32Ops 1) | 129 => SOME ("GET_FIELD", U32Ops 1)
+    | 130 => SOME ("SET_FIELD", U32Ops 1) | 131 => SOME ("ALLOC_ARRAY", U32Ops 1)
+    | 132 => SOME ("GET_INDEX", NoOps) | 133 => SOME ("SET_INDEX", NoOps)
+    | 144 => SOME ("CONSTRUCT_VARIANT", U32Ops 3) | 145 => SOME ("GET_TAG", NoOps)
+    | 146 => SOME ("GET_VARIANT_FIELD", U32Ops 1)
+    | 160 => SOME ("CONTRACT_CHECK", U32Ops 1) | 161 => SOME ("CAST", CastOps)
+    | _ => NONE
+
+  fun operandBytes (k : operands) : int =
+    case k of
+      NoOps => 0 | I32Op => 4 | I64Bytes => 8 | BoolOp => 1 | U8Op => 1
+    | U32Ops n => 4 * n | JumpOp => 4 | CastOps => 4
+
+  fun decInt (n : int) : string =
+    if n < 0 then "-" ^ Int.toString (~ n) else Int.toString n
+
+  fun u32Text (v : Word8Vector.vector) (i : int) : string =
+    LargeInt.toString (Word32.toLargeInt (u32ToWord32 v i))
+
+  fun hex2 (b : int) : string =
+    let val d = "0123456789abcdef"
+    in String.str (String.sub (d, b div 16)) ^ String.str (String.sub (d, b mod 16)) end
+
+  fun pad5 (n : int) : string =
+    let val s = Int.toString n
+    in CharVector.tabulate (Int.max (0, 5 - size s), fn _ => #" ") ^ s end
+
+  (* One instruction at code offset `ip` (code starts at absolute `cs`). *)
+  fun disasmInsn (v : Word8Vector.vector) (cs : int) (ip : int) (name : string) (k : operands) : string =
+    let
+      val a = cs + ip + 1
+      fun byte j = Word8.toInt (Word8Vector.sub (v, j))
+    in
+      case k of
+        NoOps => name
+      | I32Op => name ^ " " ^ decInt (Int32.toInt (#1 (i32At v a)))
+      | BoolOp => name ^ " " ^ Int.toString (byte a)
+      | U8Op => name ^ " " ^ Int.toString (byte a)
+      | I64Bytes => name ^ " 0x" ^ String.concat (List.tabulate (8, fn j => hex2 (byte (a + 7 - j))))
+      | JumpOp =>
+          let val d = Int32.toInt (#1 (i32At v a))
+          in name ^ " " ^ decInt d ^ " -> " ^ decInt (ip + 5 + d) end
+      | CastOps => name ^ " " ^ Int.toString (#1 (u16At v a)) ^ " " ^ Int.toString (#1 (u16At v (a + 2)))
+      | U32Ops n => String.concat (name :: List.tabulate (n, fn j => " " ^ u32Text v (a + 4 * j)))
+    end
+
+  fun disassemble (v : Word8Vector.vector) : string =
+    let
+      val (ver, _) = u16At v 4
+      val (strLen, _) = u32At v 6
+      val p0 = 10 + strLen
+      val (funcSecLen, _) = u32At v p0
+      val (funcCount, _) = u32At v (p0 + 4)
+      val codeStart = p0 + 4 + funcSecLen + 4
+      fun entry k j = #1 (u32At v (p0 + 8 + 20 * k + 4 * j))
+      fun listing cs len ip acc =
+        if ip >= len then List.rev acc
+        else
+          let val opc = Word8.toInt (Word8Vector.sub (v, cs + ip))
+          in
+            case opInfo opc of
+              NONE => List.rev (("  " ^ pad5 ip ^ "  ?? " ^ Int.toString opc ^ "\n") :: acc)
+            | SOME (name, k) =>
+                listing cs len (ip + 1 + operandBytes k)
+                  (("  " ^ pad5 ip ^ "  " ^ disasmInsn v cs ip name k ^ "\n") :: acc)
+          end
+      fun func k =
+        let val len = entry k 4
+        in
+          "fn " ^ Int.toString k ^ " (name #" ^ Int.toString (entry k 0) ^ ", arity " ^ Int.toString (entry k 1)
+          ^ ", locals " ^ Int.toString (entry k 2) ^ ", " ^ Int.toString len ^ " bytes):\n"
+          ^ String.concat (listing (codeStart + entry k 3) len 0 [])
+        end
+    in
+      if Word8Vector.length v < 6
+         orelse not (List.all (fn j => Word8Vector.sub (v, j) = Word8Vector.sub (magicBytes, j)) [0, 1, 2, 3])
+      then "not a .sv0b file\n"
+      else
+        "sv0b v" ^ Int.toString ver ^ ": " ^ Int.toString funcCount ^ " functions, "
+        ^ Int.toString strLen ^ " string bytes\n"
+        ^ String.concat (List.tabulate (funcCount, func))
+    end
+
 
 end

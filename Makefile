@@ -8,7 +8,7 @@ check:
 	  rm -f $$tmp
 
 test: coverage-identifiers
-	@echo 'use "src/main.sml"; use "test/bytecode_test.sml";' | $(SML)
+	@SML=$(SML) bash scripts/run_sml_tests.sh
 
 # CV-102: opcode 119 and coverage identifiers agree with the sv0doc registry copy.
 .PHONY: coverage-identifiers
