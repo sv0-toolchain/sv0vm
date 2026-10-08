@@ -37,4 +37,5 @@ run() {
 
 run test/bytecode_test.sml "bytecode tests: OK" "interpreter exec tests: OK"
 run test/coverage_test.sml "coverage tests: OK"
+run test/old_vm_test.sml "old-VM rejection tests: OK"
 exit "$status"
