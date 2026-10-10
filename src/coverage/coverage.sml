@@ -167,9 +167,31 @@ struct
     ; overflow := Array.array (n, false)
     ; active := true )
 
+  (* Raw-profile tier (sv0cov CV-211; see the collection notes below). *)
+  val standardTier = (4194304, 67108864)
+  val largeTier = (16777216, 268435456)
+  val protocolMax = (4294967295, 68719476736)
+  val tierMaxCounters : int ref = ref (#1 standardTier)
+  val tierMaxBytes : int ref = ref (#2 standardTier)
+
+  fun tierName () : string =
+    if (!tierMaxCounters, !tierMaxBytes) = standardTier then "standard"
+    else if (!tierMaxCounters, !tierMaxBytes) = largeTier then "large"
+    else "custom"
+
+  (* Select the raw-profile tier: both ceilings explicit, positive, and
+     inside the protocol maxima (SPEC 16.4), else COV6001. *)
+  fun setTier (maxCounters : int, maxBytes : int) : unit =
+    if maxCounters < 1 orelse maxCounters > #1 protocolMax then
+      raise Reject ("COV6001", "resource limit exceeded: the raw-profile counter ceiling must be 1..4294967295")
+    else if maxBytes < 1 orelse maxBytes > #2 protocolMax then
+      raise Reject ("COV6001", "resource limit exceeded: the raw-profile byte ceiling must be 1..68719476736")
+    else (tierMaxCounters := maxCounters; tierMaxBytes := maxBytes)
+
   fun reset () : unit =
     (bound := NONE; counters := Array.array (0, 0w0); overflow := Array.array (0, false); active := false;
-     publish := false; required := false; context := NONE; testProfileId := NONE; testBackendFlag := NONE)
+     publish := false; required := false; context := NONE; testProfileId := NONE; testBackendFlag := NONE;
+     tierMaxCounters := 4194304; tierMaxBytes := 67108864)
 
   (* ── collection: transport, profile ID, flush (CV-121) ──────────────────
      Mirrors the native runtime (sv0cov runtime/c/sv0cov_rt.c, SPEC 14.3,
@@ -182,8 +204,15 @@ struct
        duplicate, a malformed or missing value is COV2001;
      - the profile ID: 16 bytes from /dev/urandom, never all zero and never
        a fallback, else COV2002;
-     - a map above the standard raw-profile tier (4194304 counters) is
-       COV6001.
+     - a map above the raw-profile tier's counter ceiling is COV6001
+       (CV-211). The tier is the standard one (4,194,304 counters, 64 MiB)
+       unless the launcher sets another with `setTier` (`sv0 vm-run
+       --raw-profile-tier`): large (16,777,216 counters, 256 MiB) or explicit
+       custom ceilings inside the protocol maxima. The transport cannot set
+       it. An over-tier program never runs, required or not: the VM cannot
+       execute COVER_HIT without its arena. At publish, a profile that
+       would encode to more than the byte ceiling is refused before any
+       file is created, also COV6001.
      A failure prints one diagnostic naming the variable, never a value. In
      required mode the program then does not run (the loader raises Reject,
      exit status 1); otherwise it runs and counts, but nothing is
@@ -196,7 +225,6 @@ struct
      COV2010 (I/O) and COV2112 (the name exists; that file is kept); in
      required mode they make the exit status 1. *)
 
-  val tierMaxCounters = 4194304
 
   fun diag (code : string, title : string, detail : string) =
     TextIO.output (TextIO.stdErr, "sv0vm: error[" ^ code ^ "]: " ^ title ^ ": " ^ detail ^ "\n")
@@ -314,8 +342,9 @@ struct
   fun startCollection (n : int, mapId : string) : unit =
     ( publish := false
     ; required := false
-    ; if n > tierMaxCounters then
-        raise Reject ("COV6001", "resource limit exceeded: the map has more counters than the standard raw-profile tier allows (4194304)")
+    ; if n > !tierMaxCounters then
+        raise Reject ("COV6001", "resource limit exceeded: the map has " ^ Int.toString n ^ " counters; the "
+                                 ^ tierName () ^ " raw-profile tier allows " ^ Int.toString (!tierMaxCounters))
       else ()
     ; mapIdBytes := valOf (hexBytes mapId)
     ; case readTransport () of
@@ -358,6 +387,12 @@ struct
           (diag (code, title, detail); if !required then SOME 1 else NONE)
         open Posix.FileSys
       in
+        (* An over-tier profile is refused before any file exists (CV-211). *)
+        if Word8Vector.length bytes > !tierMaxBytes then
+          fail ("COV6001", "resource limit exceeded",
+                "the profile would be " ^ Int.toString (Word8Vector.length bytes) ^ " bytes; the " ^ tierName ()
+                ^ " raw-profile tier allows " ^ Int.toString (!tierMaxBytes))
+        else
         (let
            val fd = createf (tmp, O_WRONLY, O.excl, S.flags [S.irusr, S.iwusr])
            fun write off =

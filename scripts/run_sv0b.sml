@@ -11,6 +11,24 @@ val path =
       ; OS.Process.exit OS.Process.failure
       );
 
+(* sv0cov CV-211: the raw-profile tier, from the launcher (`sv0 vm-run
+   --raw-profile-tier`): both ceilings or neither. Not part of the SV0COV_*
+   transport. Unset means the standard tier. *)
+val () =
+  (case (OS.Process.getEnv "SV0B_COVERAGE_MAX_COUNTERS", OS.Process.getEnv "SV0B_COVERAGE_MAX_BYTES") of
+     (NONE, NONE) => ()
+   | (SOME c, SOME b) =>
+       (case (Int.fromString c, Int.fromString b) of
+          (SOME c', SOME b') => Coverage.setTier (c', b')
+        | _ => raise Coverage.Reject ("COV6001", "resource limit exceeded: the raw-profile ceilings are not integers"))
+   | _ => raise Coverage.Reject ("COV6001", "resource limit exceeded: a raw-profile tier needs both ceilings"))
+  handle Coverage.Reject (code, detail) =>
+           ( TextIO.output (TextIO.stdErr, "sv0vm: error[" ^ code ^ "]: " ^ detail ^ "\n")
+           ; OS.Process.exit OS.Process.failure )
+       | Overflow =>
+           ( TextIO.output (TextIO.stdErr, "sv0vm: error[COV6001]: resource limit exceeded: a raw-profile ceiling is out of range\n")
+           ; OS.Process.exit OS.Process.failure );
+
 val () = print "SV0VM_RUN_BEGIN\n";
 (* sv0cov CV-119/CV-120: a coverage rejection happens at load, before any
    instruction runs; report it with its registry code and fail. *)

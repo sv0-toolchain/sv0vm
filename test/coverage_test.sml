@@ -272,6 +272,54 @@ in
   val () = OS.FileSys.rmDir dir
   val () = Coverage.reset ()
 
+  (* 10. Raw-profile tiers (sv0cov CV-211, SPEC 16.4): standard by default;
+     large and custom are set explicitly; both ceilings are positive and
+     inside the protocol maxima; exact boundaries. *)
+  val () = expect ("tier-default-standard",
+    (!Coverage.tierMaxCounters, !Coverage.tierMaxBytes) = (4194304, 67108864) andalso Coverage.tierName () = "standard")
+  val () = Coverage.setTier (16777216, 268435456)
+  val () = expect ("tier-large", Coverage.tierName () = "large")
+  val () = Coverage.setTier (4294967295, 68719476736)
+  val () = expect ("tier-protocol-maxima", Coverage.tierName () = "custom")
+  val () = expect ("tier-zero-counters", rejects (fn () => Coverage.setTier (0, 1000)) = SOME "COV6001")
+  val () = expect ("tier-counters-over-protocol", rejects (fn () => Coverage.setTier (4294967296, 1000)) = SOME "COV6001")
+  val () = expect ("tier-zero-bytes", rejects (fn () => Coverage.setTier (10, 0)) = SOME "COV6001")
+  val () = expect ("tier-bytes-over-protocol", rejects (fn () => Coverage.setTier (10, 68719476737)) = SOME "COV6001")
+  val () = expect ("tier-negative", rejects (fn () => Coverage.setTier (~1, 1000)) = SOME "COV6001")
+  val () = expect ("tier-kept-after-rejects",
+    (!Coverage.tierMaxCounters, !Coverage.tierMaxBytes) = (4294967295, 68719476736))
+  val () = Coverage.reset ()
+  val () = expect ("tier-reset-to-standard", Coverage.tierName () = "standard")
+  (* Counter ceiling: the golden binding counts 3. *)
+  val prog3 = prog [COVER_HIT 2, RETURN]
+  val () = Coverage.setTier (3, 4096)
+  val () = expect ("tier-counters-at-limit", rejects (fn () => Coverage.load (prog3, bc, SOME golden)) = NONE)
+  val () = Coverage.reset ()
+  val () = Coverage.setTier (2, 4096)
+  val () = expect ("tier-counters-over-limit", rejects (fn () => Coverage.load (prog3, bc, SOME golden)) = SOME "COV6001")
+  val () = Coverage.reset ()
+  (* Byte ceiling: `prepare` makes a 116-byte profile (3 counters, one
+     pair, an empty context). At exactly 116 it is published; at 115 it is
+     refused before any file exists, status 1 only when required. *)
+  fun entries (d : string) =
+    let val h = OS.FileSys.openDir d
+        fun all acc = case OS.FileSys.readDir h of NONE => acc | SOME f => all (f :: acc)
+    in all [] before OS.FileSys.closeDir h end
+  val tdir = freshDir ()
+  val () = prepare tdir
+  val () = Coverage.setTier (3, 116)
+  val () = expect ("tier-bytes-at-limit", Coverage.flush () = NONE andalso entries tdir = [name])
+  val () = OS.FileSys.remove (tdir ^ "/" ^ name)
+  val () = prepare tdir
+  val () = Coverage.setTier (3, 115)
+  val () = expect ("tier-bytes-over-not-required", Coverage.flush () = NONE andalso entries tdir = [])
+  val () = prepare tdir
+  val () = Coverage.setTier (3, 115)
+  val () = Coverage.required := true
+  val () = expect ("tier-bytes-over-required", Coverage.flush () = SOME 1 andalso entries tdir = [])
+  val () = OS.FileSys.rmDir tdir
+  val () = Coverage.reset ()
+
   val () =
     if !nfail = 0 then print "coverage tests: OK\n"
     else raise Fail ("coverage tests: " ^ Int.toString (!nfail) ^ " failure(s)")
