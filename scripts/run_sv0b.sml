@@ -36,9 +36,22 @@ val () = print "SV0VM_RUN_BEGIN\n";
    companion explicitly (a file next to the bytecode confers nothing). Read
    inline: a new top-level val would be echoed into the program's output,
    which callers parse after SV0VM_RUN_BEGIN. *)
+(* sv0cov CV-212: the process status matches the native executable. A
+   program that ends in an orderly way -- a return, a contract failure or a
+   runtime panic (both exit code 1) -- gives its exit code's low 8 bits, as a
+   native process does; the profile has been published by then. Any other
+   exception is a fatal VM failure: one diagnostic, status 134 (what a shell
+   reports for an aborted process), no vm_exit line and no profile, so the
+   run is incomplete. `sml < script` would otherwise carry on and exit 0. *)
 val exitCode = Interpreter.runFileBound (path, OS.Process.getEnv "SV0B_COVERAGE_BINDING")
   handle Coverage.Reject (code, detail) =>
     ( TextIO.output (TextIO.stdErr, "sv0vm: error[" ^ code ^ "]: " ^ detail ^ "\n")
-    ; OS.Process.exit OS.Process.failure );
+    ; OS.Process.exit OS.Process.failure )
+       | e =>
+    ( TextIO.flushOut TextIO.stdOut
+    ; TextIO.output (TextIO.stdErr, "sv0vm: fatal: " ^ exnMessage e ^ "\n")
+    ; TextIO.flushOut TextIO.stdErr
+    ; Posix.Process.exit 0w134 );
 val () = print ("vm_exit:" ^ Int.toString exitCode ^ "\n");
-OS.Process.exit (if exitCode = 0 then OS.Process.success else OS.Process.failure);
+val () = TextIO.flushOut TextIO.stdOut;
+Posix.Process.exit (Word8.fromInt (exitCode mod 256));

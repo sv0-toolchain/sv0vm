@@ -216,12 +216,14 @@ struct
      A failure prints one diagnostic naming the variable, never a value. In
      required mode the program then does not run (the loader raises Reject,
      exit status 1); otherwise it runs and counts, but nothing is
-     published. After the program returns -- normally or through a contract
-     failure, both of which end runWithStack with an exit code -- `flush`
+     published. After the program returns -- normally, through a contract
+     failure, or through a runtime panic the C runtime defines (CV-212), all
+     of which end runWithStack with an exit code -- `flush`
      writes <run_id>-<profile_id>.sv0profraw: a mode-0600 temporary with an
      unpredictable name, fsynced and closed, then committed with link() (an
      atomic no-replace) and the temporary removed; the directory is fsynced.
-     A crash (an uncaught exception) publishes nothing. Flush failures are
+     A fatal VM failure (any other exception; run_sv0b.sml exits 134)
+     publishes nothing. Flush failures are
      COV2010 (I/O) and COV2112 (the name exists; that file is kept); in
      required mode they make the exit status 1. *)
 

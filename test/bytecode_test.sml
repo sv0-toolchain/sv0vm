@@ -411,6 +411,21 @@ in
     vf ([LOAD_LOCAL 0, p 7, CALL_BUILTIN 38] @
         sel [LOAD_LOCAL 0, p 0, CALL_BUILTIN 39, pf 7.0, EQ] 1 0), 1)
 
+  (* sv0cov CV-212: the runtime panics the C runtime defines are orderly on
+     the VM too -- exit code 1 (after `sv0 panic: ...` on stderr), not an
+     uncaught exception. An out-of-range vec_set used to do nothing. *)
+  fun pushI (k : int) : insn list = [LOAD_LOCAL 0, p k, CALL_BUILTIN 8]
+  val () = expect ("panic-vec-get-empty", vf [LOAD_LOCAL 0, p 3, CALL_BUILTIN 10, RETURN], 1)
+  val () = expect ("panic-vec-get-at-len", vf (pushI 40 @ pushI 41 @ [LOAD_LOCAL 0, p 2, CALL_BUILTIN 10, RETURN]), 1)
+  val () = expect ("panic-vec-get-negative", vf (pushI 40 @ [LOAD_LOCAL 0, p (~1), CALL_BUILTIN 10, RETURN]), 1)
+  val () = expect ("vec-get-last-in-range", vf (pushI 40 @ pushI 41 @ [LOAD_LOCAL 0, p 1, CALL_BUILTIN 10, RETURN]), 41)
+  val () = expect ("panic-vec-set-at-len", vf (pushI 40 @ [LOAD_LOCAL 0, p 1, p 5, CALL_BUILTIN 11, p 42, RETURN]), 1)
+  val () = expect ("panic-vec-set-negative", vf (pushI 40 @ [LOAD_LOCAL 0, p (~1), p 5, CALL_BUILTIN 11, p 42, RETURN]), 1)
+  val () = expect ("vec-set-in-range", vf (pushI 40 @ [LOAD_LOCAL 0, p 0, p 5, CALL_BUILTIN 11, LOAD_LOCAL 0, p 0, CALL_BUILTIN 10, RETURN]), 5)
+  (* Anything else stays a fatal VM failure: an exception, never an exit code. *)
+  val () = expect ("fatal-division-by-zero",
+    ((run [p 7, p 0, DIV_I32, RETURN]; 0) handle Fail _ => 1), 1)
+
   (* f64 forms of the e[i] / e[i] = v sugar (builtins 41 get / 42 set): on a
      plain vec handle and through a slice view (slice_from_vec = builtin 30) *)
   fun vf2 (body : insn list) : int =

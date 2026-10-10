@@ -293,6 +293,13 @@ structure Interpreter = struct
      returns exit code 1 — a clean abort, not an uncaught SML exception. *)
   exception ContractViolation of string
 
+  (* sv0cov CV-212: a runtime panic the C runtime defines (sv0_panic: bounds
+     and I/O failures). Like a contract violation it is an orderly failure:
+     `sv0 panic: <message>` on stderr with the C runtime's message, exit
+     code 1, and the coverage profile is still published. Any other
+     exception is a fatal VM failure (run_sv0b.sml). *)
+  exception Panic of string
+
   (* SS-U17 (sv0-strings BACKEND-004): owned-string allocation fault injection,
      the VM peer of the C runtime's SV0_STR_FAIL_AT (SS-U02d). Each runtime
      string-allocating builtin (concat=4, substr=6, from_bytes=35) that
@@ -333,7 +340,7 @@ structure Interpreter = struct
       fun readAllText path =
         let val ins = TextIO.openIn path
         in TextIO.inputAll ins before TextIO.closeIn ins end
-           handle _ => raise Fail "read_file: io error"
+           handle _ => raise Panic "read_file: fopen failed"
 
       fun isHidden name =
         String.size name > 0 andalso String.sub (name, 0) = #"."
@@ -360,7 +367,7 @@ structure Interpreter = struct
         in
           loop acc
         end
-           handle _ => raise Fail "read_dir: io error"
+           handle _ => raise Panic "read_dir: opendir failed"
 
       fun insertPathSorted (s : string) (xs : string list) : string list =
         case xs of
@@ -411,10 +418,15 @@ structure Interpreter = struct
       fun boxLoad h off = Array.sub (boxPool, h + off)
       fun vecPush h v = let val r = vecRef h in r := !r @ [v] end
       fun vecLen h = length (!(vecRef h))
-      fun vecGet h i = List.nth (!(vecRef h), i)
+      fun vecGet h i =
+        let val xs = !(vecRef h)
+        in if i < 0 orelse i >= length xs then raise Panic "vec: index out of bounds"
+           else List.nth (xs, i)
+        end
       fun vecSet h i v =
         let val r = vecRef h
             val old = !r
+            val () = if i < 0 orelse i >= length old then raise Panic "vec: index out of bounds" else ()
         in r := List.tabulate (length old,
              fn k => if k = i then v else List.nth (old, k))
         end
@@ -446,18 +458,18 @@ structure Interpreter = struct
       fun sliceFromView (h, lo, hi) =
         let val n = viewLen h
         in if lo < 0 orelse hi < lo orelse hi > n
-           then raise Fail "slice: range out of bounds"
+           then raise Panic "slice: range out of bounds"
            else let val (b, ofs) = viewBaseOff h
                 in sliceIntern (b, ofs + lo, hi - lo) end
         end
       fun sliceGet (sh, i) =
         let val (b, ofs, l) = sliceTriple sh
-        in if i < 0 orelse i >= l then raise Fail "slice: index out of bounds"
+        in if i < 0 orelse i >= l then raise Panic "slice: index out of bounds"
            else vecGet b (ofs + i)
         end
       fun sliceSet (sh, i, v) =
         let val (b, ofs, l) = sliceTriple sh
-        in if i < 0 orelse i >= l then raise Fail "slice: index out of bounds"
+        in if i < 0 orelse i >= l then raise Panic "slice: index out of bounds"
            else vecSet b (ofs + i) v
         end
       fun idxGet (h, i) = if isSlice h then sliceGet (h, i) else vecGet h i
@@ -762,8 +774,10 @@ structure Interpreter = struct
                                     -- `idx == size s` yields 0 (no read), so the
                                     compiler scanners' one-past-the-end idiom works
                                     on the VM too; a real over-range still faults
-                                    (String.sub raises Subscript). *)
+                                    (`sv0 panic: string: index out of bounds`). *)
                                  val b = if idx = String.size s then 0
+                                         else if idx < 0 orelse idx > String.size s
+                                         then raise Panic "string: index out of bounds"
                                          else Char.ord (String.sub (s, idx))
                              in push stack (CInt b); setTopIp nextIp; true end
                          | _ => raise Fail "interpreter: string_char_at expects string index and int"
@@ -775,7 +789,10 @@ structure Interpreter = struct
                           val sc = pop stack
                       in case sc of
                            CStrIdx si =>
-                             let val s = String.substring (lookupStr si, start, len)
+                             let val whole = lookupStr si
+                                 val () = if start < 0 orelse len < 0 orelse start > String.size whole - len
+                                          then raise Panic "string: substring out of bounds" else ()
+                                 val s = String.substring (whole, start, len)
                                  val () = strAllocTick s
                                  val idx = addStr s
                              in push stack (CStrIdx idx); setTopIp nextIp; true end
@@ -843,7 +860,7 @@ structure Interpreter = struct
                            in
                              ( let val outs = TextIO.openOut path
                                in TextIO.output (outs, contents); TextIO.closeOut outs end
-                             ) handle _ => raise Fail "write_file: io error"
+                             ) handle _ => raise Panic "write_file: fopen failed"
                              ; setTopIp nextIp
                              ; true
                            end
@@ -969,6 +986,9 @@ structure Interpreter = struct
         (loop ()
          handle ContractViolation m =>
            ( TextIO.output (TextIO.stdErr, "sv0 contract violation: " ^ m ^ "\n")
+           ; stack := [CInt 1] )
+              | Panic m =>
+           ( TextIO.output (TextIO.stdErr, "sv0 panic: " ^ m ^ "\n")
            ; stack := [CInt 1] )
               | StrAllocFail =>
            ( TextIO.output (TextIO.stdErr, "sv0 panic: string: allocation failed\n")
