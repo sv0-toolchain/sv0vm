@@ -300,6 +300,29 @@ structure Interpreter = struct
      exception is a fatal VM failure (run_sv0b.sml). *)
   exception Panic of string
 
+  (* Integer division and remainder (sv0doc type-system/rules.md 1.5): a zero
+     divisor, and the one signed overflow MIN / -1 (or MIN % -1), are runtime
+     panics with the C runtime's messages. `min` is the type's minimum for a
+     signed operation, NONE for an unsigned one. Top of stack is the divisor. *)
+  fun divGuard (min : IntInf.int option) (stack : cell list ref) : unit =
+    let fun wide (CInt n) = SOME (IntInf.fromInt n)
+          | wide (CI64 n) = SOME (Int64.toLarge n)
+          | wide _ = NONE
+    in
+      case !stack of
+        b :: a :: _ =>
+          (case wide b of
+             SOME z =>
+               if z = 0 then raise Panic "division by zero"
+               else (case (min, wide a) of
+                       (SOME m, SOME x) => if x = m andalso z = ~1 then raise Panic "division overflow" else ()
+                     | _ => ())
+           | NONE => ())
+      | _ => ()
+    end
+  val minI32 : IntInf.int = ~2147483648
+  val minI64 : IntInf.int = ~9223372036854775808
+
   (* SS-U17 (sv0-strings BACKEND-004): owned-string allocation fault injection,
      the VM peer of the C runtime's SV0_STR_FAIL_AT (SS-U02d). Each runtime
      string-allocating builtin (concat=4, substr=6, from_bytes=35) that
@@ -512,16 +535,12 @@ structure Interpreter = struct
                 | B.SUB_I32 => (arithII (fn (a, b) => Word32.toIntX (Word32.- (asWord32 a, asWord32 b))) stack; setTopIp nextIp; true)
                 | B.MUL_I32 => (arithII (fn (a, b) => Word32.toIntX (Word32.* (asWord32 a, asWord32 b))) stack; setTopIp nextIp; true)
                 | B.DIV_I32 =>
-                    ( case !stack of
-                        CInt 0 :: _ => raise Fail "interpreter: division by zero"
-                      | _ => ();
+                    ( divGuard (SOME minI32) stack;
                       arithII (fn (a, b) => Word32.toIntX (asWord32 (Int.quot (a, b)))) stack;
                       setTopIp nextIp;
                       true)
                 | B.MOD_I32 =>
-                    ( case !stack of
-                        CInt 0 :: _ => raise Fail "interpreter: modulo by zero"
-                      | _ => ();
+                    ( divGuard (SOME minI32) stack;
                       arithII (fn (a, b) => Word32.toIntX (asWord32 (Int.rem (a, b)))) stack;
                       setTopIp nextIp;
                       true)
@@ -537,16 +556,12 @@ structure Interpreter = struct
                 | B.SUB_I64 => (arithLL (fn (a, b) => unw64 (Word64.- (w64 a, w64 b))) stack; setTopIp nextIp; true)
                 | B.MUL_I64 => (arithLL (fn (a, b) => unw64 (Word64.* (w64 a, w64 b))) stack; setTopIp nextIp; true)
                 | B.DIV_I64 =>
-                    ( case !stack of
-                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: division by zero" else ()
-                      | _ => ();
+                    ( divGuard (SOME minI64) stack;
                       arithLL (fn (a, b) => Int64.quot (a, b)) stack;
                       setTopIp nextIp;
                       true)
                 | B.MOD_I64 =>
-                    ( case !stack of
-                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: modulo by zero" else ()
-                      | _ => ();
+                    ( divGuard (SOME minI64) stack;
                       arithLL (fn (a, b) => Int64.rem (a, b)) stack;
                       setTopIp nextIp;
                       true)
@@ -558,16 +573,12 @@ structure Interpreter = struct
                       true)
                 (* SS-U14: unsigned wide div / rem. *)
                 | B.DIV_U64 =>
-                    ( case !stack of
-                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: division by zero" else ()
-                      | _ => ();
+                    ( divGuard (NONE) stack;
                       arithLL (fn (a, b) => unw64 (Word64.div (w64 a, w64 b))) stack;
                       setTopIp nextIp;
                       true)
                 | B.MOD_U64 =>
-                    ( case !stack of
-                        CI64 z :: _ => if z = (0 : Int64.int) then raise Fail "interpreter: modulo by zero" else ()
-                      | _ => ();
+                    ( divGuard (NONE) stack;
                       arithLL (fn (a, b) => unw64 (Word64.mod (w64 a, w64 b))) stack;
                       setTopIp nextIp;
                       true)

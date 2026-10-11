@@ -135,9 +135,10 @@ in
   (* (-1) % 100 = -1 (not +99) *)
   val () = expect ("neg-mod2",
     runI [p (~1), p 100, Bytecode.MOD_I32, Bytecode.RETURN], ~1)
-  (* INT_MIN / -1 wraps to INT_MIN (would raise Overflow without the Word32 wrap) *)
+  (* INT_MIN / -1 does not fit: a `division overflow` panic, exit code 1
+     (sv0doc type-system/rules.md 1.5). It used to wrap to INT_MIN. *)
   val () = expect ("intmin-div",
-    runI [p (~2147483648), p (~1), Bytecode.DIV_I32, Bytecode.RETURN], ~2147483648)
+    runI [p (~2147483648), p (~1), Bytecode.DIV_I32, Bytecode.RETURN], 1)
 end
 
 (* ---- PUSH_F64 bit-pattern round-trip (sv0-mathlib per-fixture check /
@@ -422,9 +423,25 @@ in
   val () = expect ("panic-vec-set-at-len", vf (pushI 40 @ [LOAD_LOCAL 0, p 1, p 5, CALL_BUILTIN 11, p 42, RETURN]), 1)
   val () = expect ("panic-vec-set-negative", vf (pushI 40 @ [LOAD_LOCAL 0, p (~1), p 5, CALL_BUILTIN 11, p 42, RETURN]), 1)
   val () = expect ("vec-set-in-range", vf (pushI 40 @ [LOAD_LOCAL 0, p 0, p 5, CALL_BUILTIN 11, LOAD_LOCAL 0, p 0, CALL_BUILTIN 10, RETURN]), 5)
+  (* Integer division and remainder by zero, and MIN / -1, are panics too
+     (sv0doc type-system/rules.md 1.5); they were a fatal VM failure, or for
+     MIN / -1 a silently wrapped result. *)
+  val () = expect ("panic-div-i32-zero", run [p 7, p 0, DIV_I32, RETURN], 1)
+  val () = expect ("panic-mod-i32-zero", run [p 7, p 0, MOD_I32, RETURN], 1)
+  val () = expect ("panic-div-i32-min-by-minus-one", run [p (~2147483648), p (~1), DIV_I32, p 9, RETURN], 1)
+  val () = expect ("panic-mod-i32-min-by-minus-one", run [p (~2147483648), p (~1), MOD_I32, p 9, RETURN], 1)
+  val () = expect ("div-i32-truncates-toward-zero", run [p (~7), p 2, DIV_I32, p 10, ADD_I32, RETURN], 7)
+  val () = expect ("mod-i32-takes-the-dividends-sign", run [p (~7), p 3, MOD_I32, p 10, ADD_I32, RETURN], 9)
+  val () = expect ("div-i32-min-by-one", run (sel [p (~2147483648), p 1, DIV_I32, p (~2147483648), EQ] 1 0), 1)
+  val () = expect ("panic-div-i64-zero", run [pl 9, pl 0, DIV_I64, p 9, RETURN], 1)
+  val () = expect ("panic-mod-i64-zero", run [pl 9, pl 0, MOD_I64, p 9, RETURN], 1)
+  val () = expect ("panic-div-i64-zero-literal-int", run [pl 9, p 0, DIV_I64, p 9, RETURN], 1)
+  val () = expect ("panic-div-u64-zero", run [pl 9, pl 0, DIV_U64, p 9, RETURN], 1)
+  val () = expect ("panic-mod-u64-zero", run [pl 9, pl 0, MOD_U64, p 9, RETURN], 1)
+  val () = expect ("div-u64-all-ones-by-minus-one-bits", run (sel [pl (~1), pl (~1), DIV_U64, pl 1, EQ] 1 0), 1)
   (* Anything else stays a fatal VM failure: an exception, never an exit code. *)
-  val () = expect ("fatal-division-by-zero",
-    ((run [p 7, p 0, DIV_I32, RETURN]; 0) handle Fail _ => 1), 1)
+  val () = expect ("fatal-unknown-builtin",
+    ((run [CALL_BUILTIN 9999, RETURN]; 0) handle Fail _ => 1), 1)
 
   (* f64 forms of the e[i] / e[i] = v sugar (builtins 41 get / 42 set): on a
      plain vec handle and through a slice view (slice_from_vec = builtin 30) *)
