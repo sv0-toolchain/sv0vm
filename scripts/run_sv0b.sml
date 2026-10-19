@@ -2,16 +2,15 @@
    SV0B_COVERAGE_BINDING, if set); run main; print vm_exit:<code> for shell tests. *)
 
 (* A terminating signal must end the run at once with a failed status and
-   publish nothing. Installed before the VM sources load (which can take
-   seconds on a loaded machine) so an early signal is not ignored: `sv0
-   vm-run` execs this runtime (no wrapper process), and the SML/NJ runtime
-   does not die on SIGTERM by default. Posix.Process.exit skips at-exit
-   hooks, so no coverage profile is written. *)
+   publish nothing, as it ends a native program. `sv0 vm-run` execs this
+   runtime (no wrapper process), and the SML/NJ runtime catches every signal
+   and only runs an ML handler at its next poll point, which a busy run can
+   miss for good; so SIGTERM and SIGINT get the operating system's default
+   action back and the kernel ends the process. Set before the VM sources
+   load, so an early signal is not lost either. *)
 val () =
-  List.app
-    (fn (sg, code) =>
-       ignore (Signals.setHandler (sg, Signals.HANDLER (fn _ => Posix.Process.exit code))))
-    [(UnixSignals.sigTERM, 0w143), (UnixSignals.sigINT, 0w130)];
+  List.app (fn sg => ignore (Signals.setHandler (sg, Signals.DEFAULT)))
+    [UnixSignals.sigTERM, UnixSignals.sigINT];
 
 use "src/main.sml";
 
