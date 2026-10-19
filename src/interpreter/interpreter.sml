@@ -862,6 +862,17 @@ structure Interpreter = struct
                              push stack (CStrIdx idx); setTopIp nextIp; true
                            end
                        | _ => raise Fail "interpreter: read_file expects string index")
+                    else if bid = 19 then
+                      (* getenv (NEX-055c): the host environment variable, "" when
+                         unset -- the same as the C runtime's sv0_getenv. *)
+                      (case pop stack of
+                         CStrIdx ni =>
+                           let
+                             val v = Option.getOpt (OS.Process.getEnv (lookupStr ni), "")
+                           in
+                             push stack (CStrIdx (addStr v)); setTopIp nextIp; true
+                           end
+                       | _ => raise Fail "interpreter: getenv expects string index")
                     else if bid = 16 then
                       (case (pop stack, pop stack) of
                          (CStrIdx ci, CStrIdx pi) =>
