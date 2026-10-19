@@ -29,6 +29,16 @@ val () =
            ( TextIO.output (TextIO.stdErr, "sv0vm: error[COV6001]: resource limit exceeded: a raw-profile ceiling is out of range\n")
            ; OS.Process.exit OS.Process.failure );
 
+(* A terminating signal must end the run at once with a failed status and
+   publish nothing: `sv0 vm-run` execs this runtime (no wrapper process), and
+   the SML/NJ runtime does not die on SIGTERM by default. Posix.Process.exit
+   skips at-exit hooks, so no coverage profile is written. *)
+val () =
+  List.app
+    (fn (sg, code) =>
+       ignore (Signals.setHandler (sg, Signals.HANDLER (fn _ => Posix.Process.exit code))))
+    [(UnixSignals.sigTERM, 0w143), (UnixSignals.sigINT, 0w130)];
+
 val () = print "SV0VM_RUN_BEGIN\n";
 (* sv0cov CV-119/CV-120: a coverage rejection happens at load, before any
    instruction runs; report it with its registry code and fail. *)
