@@ -7,7 +7,7 @@ check:
 	  if grep -q 'Error:' $$tmp; then tail -40 $$tmp; rm -f $$tmp; exit 1; fi; \
 	  rm -f $$tmp
 
-test: coverage-identifiers
+test: coverage-identifiers orderly-flush
 	@SML=$(SML) bash scripts/run_sml_tests.sh
 
 # CV-102: opcode 119 and coverage identifiers agree with the sv0doc registry copy.
@@ -15,3 +15,9 @@ test: coverage-identifiers
 coverage-identifiers:
 	python3 scripts/check_coverage_identifiers.py --selftest
 	python3 scripts/check_coverage_identifiers.py --repo sv0vm
+
+# sv0cov CV-406: no checkpoint, no mapping; the profile is written only by the orderly flush.
+.PHONY: orderly-flush
+orderly-flush:
+	python3 scripts/check_orderly_flush.py --selftest
+	python3 scripts/check_orderly_flush.py
