@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Install SML/NJ for CI (amd64 Linux). Matches developer 110.99.x; apt smlnj is too old for sv0vm/sv0c.
+# If smlnj.org and its mirror are unreachable, falls back to the NixOS-built SML/NJ 2026.3
+# (developers run 2026.x) from cache.nixos.org, pinned by store path.
 set -euo pipefail
 
 SMLNJ_VERSION="${SMLNJ_VERSION:-110.99.9}"
@@ -46,6 +48,31 @@ download_config_tgz() {
   "${CURL_LONG[@]}" -o "$dest" "$mirror"
 }
 
+# Hydra build of nixpkgs smlnj for x86_64-linux; cache.nixos.org signs it.
+NIX_SMLNJ="/nix/store/w681j2v1xplprr505biwy6qwz0p8g1ra-smlnj-2026.3"
+NIX_INSTALLER="https://releases.nixos.org/nix/nix-2.28.4/install"
+
+install_from_nix() {
+  echo "ci-install-smlnj: smlnj.org unavailable; installing SML/NJ 2026.3 from cache.nixos.org" >&2
+  cd "$HOME"
+  rm -rf "$ROOT" # a partial tree would be saved under the 110.99.9 cache key and block the real install
+  if ! command -v nix-store >/dev/null; then
+    sh <("${CURL_LONG[@]}" "$NIX_INSTALLER") --no-daemon --yes
+  fi
+  if [[ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]]; then
+    set +u # nix.sh reads unset variables
+    # shellcheck disable=SC1091
+    . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+    set -u
+  fi
+  nix-store --realise "$NIX_SMLNJ" >/dev/null
+  export PATH="$NIX_SMLNJ/bin:$PATH"
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    echo "$NIX_SMLNJ/bin" >>"$GITHUB_PATH"
+  fi
+  sml '@SMLversion'
+}
+
 append_path
 if [[ -x "$ROOT/bin/sml" ]]; then
   sml '@SMLversion'
@@ -60,9 +87,10 @@ write_fetch_config_for_installer
 mkdir -p "$ROOT"
 cd "$ROOT"
 rm -f config.tgz
-download_config_tgz config.tgz
-tar -xzf config.tgz
-./config/install.sh
+if ! { download_config_tgz config.tgz && tar -xzf config.tgz && ./config/install.sh; }; then
+  install_from_nix
+  exit 0
+fi
 
 append_path
 if [[ ! -x "$ROOT/bin/sml" ]]; then
