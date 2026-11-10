@@ -220,8 +220,10 @@ struct
      failure, or through a runtime panic the C runtime defines (CV-212), all
      of which end runWithStack with an exit code -- `flush`
      writes <run_id>-<profile_id>.sv0profraw: a mode-0600 temporary with an
-     unpredictable name, fsynced and closed, then committed with link() (an
-     atomic no-replace) and the temporary removed; the directory is fsynced.
+     unpredictable name, closed, then committed with link() (an atomic
+     no-replace) and the temporary removed. Nothing is fsynced (SPEC 23.4,
+     DEC-094): a process crash needs only the bytes in the kernel before
+     the commit, and an OS crash's damage fails the marker or CRC.
      A fatal VM failure (any other exception; run_sv0b.sml exits 134)
      publishes nothing. Flush failures are
      COV2010 (I/O) and COV2112 (the name exists; that file is kept); in
@@ -400,13 +402,10 @@ struct
            fun write off =
              if off >= Word8Vector.length bytes then ()
              else write (off + Posix.IO.writeVec (fd, Word8VectorSlice.slice (bytes, off, NONE)))
-           val () = (write 0; Posix.IO.fsync fd; Posix.IO.close fd)
+           val () = (write 0; Posix.IO.close fd)
                     handle e => (Posix.IO.close fd handle _ => (); unlink tmp handle _ => (); raise e)
          in
-           (link {old = tmp, new = dst}; unlink tmp;
-            (let val dfd = openf (!profileDir, O_RDONLY, O.flags [])
-             in (Posix.IO.fsync dfd handle _ => ()); Posix.IO.close dfd end) handle _ => ();
-            NONE)
+           (link {old = tmp, new = dst}; unlink tmp; NONE)
            handle OS.SysErr (_, SOME e) =>
              (unlink tmp handle _ => ();
               if e = Posix.Error.exist
